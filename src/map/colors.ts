@@ -1,0 +1,15 @@
+import type { TileType } from "../types/world";
+
+const RGB: Record<TileType, [number, number, number]> = {
+	DeepWater: [0x1a, 0x3a, 0x5c],
+	Water: [0x2b, 0x6c, 0xb0],
+	Sand: [0xe8, 0xd5, 0xa3],
+	Grass: [0x5a, 0xa4, 0x4a],
+	Forest: [0x2d, 0x5a, 0x27],
+	Mountain: [0x6b, 0x6b, 0x6b],
+	Snow: [0xf0, 0xf0, 0xf5],
+};
+
+export function biomeToRgb(biome: TileType): [number, number, number] {
+	return RGB[biome];
+}
