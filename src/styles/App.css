@@ -32,6 +32,45 @@
   box-sizing: border-box;
 }
 
+.seed-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.seed-actions > button {
+  flex: 1;
+}
+
+.seed-info-toggle {
+  font-size: 0.85rem;
+  padding: 0.6em 0.8em;
+}
+
+.seed-info {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: inherit;
+  opacity: 0.9;
+}
+
+.seed-info p {
+  margin: 0 0 0.5rem;
+}
+
+.seed-info ul {
+  margin: 0 0 0.5rem;
+  padding-left: 1.1rem;
+}
+
+.seed-info li {
+  margin-bottom: 0.35rem;
+}
+
+.seed-info code {
+  font-size: 0.85em;
+}
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }

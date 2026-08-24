@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use crate::world::prng::hash_seed;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -33,7 +32,7 @@ impl ShapeProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldConfig {
-    pub seed: String,
+    pub seed: u64,
     pub world_width: u32,
     pub world_height: u32,
     pub region_size: u32,
@@ -54,7 +53,7 @@ pub struct WorldConfig {
 impl Default for WorldConfig {
   fn default() -> Self {
     Self {
-      seed: "eons-world-1".into(),
+      seed: 5,
       world_width: 512,
       world_height: 512,
       region_size: 64,
@@ -75,15 +74,14 @@ impl Default for WorldConfig {
 }
 
 impl WorldConfig {
-  pub fn with_seed(mut self, seed: impl Into<String>) -> Self {
-      self.seed = seed.into();
+  pub fn with_seed(mut self, seed: u64) -> Self {
+      self.seed = seed;
       self
   }
 
   pub fn resolved_shape_profile(&self) -> ShapeProfile {
       self.shape_profile.unwrap_or_else(|| {
-          let h = hash_seed(&self.seed);
-          ShapeProfile::from_index((h % 5) as u32)
+          ShapeProfile::from_index((self.seed % 5) as u32)
       })
   }
 }

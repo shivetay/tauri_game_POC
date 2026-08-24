@@ -21,7 +21,7 @@ impl Default for WorldState {
 }
 
 #[tauri::command]
-fn generate_global(state: State<'_, Mutex<WorldState>>, seed: String) -> TerrainGrid {
+fn generate_global(state: State<'_, Mutex<WorldState>>, seed: u64) -> TerrainGrid {
 	let mut guard = state.lock().unwrap();
 	guard.config.seed = seed;
 	let grid = generate_global_grid(guard.config.clone());
@@ -32,7 +32,7 @@ fn generate_global(state: State<'_, Mutex<WorldState>>, seed: String) -> Terrain
 #[tauri::command]
 fn generate_region(
 	state: State<'_, Mutex<WorldState>>,
-	seed: String,
+	seed: u64,
 	rx: u32,
 	ry: u32,
 ) -> TerrainGrid {

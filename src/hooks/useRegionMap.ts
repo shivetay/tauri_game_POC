@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { generateRegion, type RegionId, type TerrainGrid } from "../api/world";
 
-export function useRegionMap(seed: string, region: RegionId | null) {
+export function useRegionMap(seed: number, region: RegionId | null) {
 	const [grid, setGrid] = useState<TerrainGrid | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);

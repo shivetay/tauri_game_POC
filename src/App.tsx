@@ -9,15 +9,23 @@ import "./styles/MapScreen.css";
 import "./styles/App.css";
 
 function App() {
-	const [seed, setSeed] = useState("eons-world-1");
-	const [draftSeed, setDraftSeed] = useState("eons-world-1");
+	const [seed, setSeed] = useState(5);
+	const [draftSeed, setDraftSeed] = useState("5");
 	const [selectedRegion, setSelectedRegion] = useState<RegionId | null>(null);
+	const [seedError, setSeedError] = useState<string | null>(null);
 
 	const { grid, loading, error } = useWorldMap(seed);
 	const regionMap = useRegionMap(seed, selectedRegion);
 
 	function applySeed() {
-		setSeed(draftSeed);
+		const parsedSeed = Number(draftSeed);
+		if (!Number.isSafeInteger(parsedSeed) || parsedSeed < 0) {
+			setSeedError("Seed musi być nieujemną liczbą całkowitą.");
+			return;
+		}
+
+		setSeed(parsedSeed);
+		setSeedError(null);
 		setSelectedRegion(null);
 	}
 
@@ -42,6 +50,7 @@ function App() {
 					onRegenerate={applySeed}
 					loading={loading || regionMap.loading}
 				/>
+				{seedError && <p className="map-error">{seedError}</p>}
 				{error && <p className="map-error">{error}</p>}
 				{regionMap.error && <p className="map-error">{regionMap.error}</p>}
 				{(loading || regionMap.loading) && (

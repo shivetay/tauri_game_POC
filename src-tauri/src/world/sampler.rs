@@ -3,9 +3,9 @@ use noise::SuperSimplex;
 use crate::world::biome::biome;
 use crate::world::config::{LodLevel, WorldConfig};
 use crate::world::noise::{fbm, redistribute, clamp01};
-use crate::world::prng::hash_seed;
 use crate::world::shape::{apply_shape, shape_value};
-use crate::world::types::{RegionBounds, TerrainCell, TileType};
+use crate::world::types::{RegionBounds, TerrainCell};
+use crate::world::prng::{derive_seed, hash_seed};
 
 pub struct TerrainSampler {
     config: WorldConfig,
@@ -17,10 +17,10 @@ pub struct TerrainSampler {
 
 impl TerrainSampler {
     pub fn new(config: WorldConfig) -> Self {
-        let elev_seed = hash_seed(&config.seed);
-        let moist_seed = hash_seed(&format!("{}:moisture", config.seed));
-        let detail_seed = hash_seed(&format!("{}:detail", config.seed));
-        let coast_seed = hash_seed(&format!("{}:coast", config.seed));
+        let elev_seed = hash_seed(config.seed);
+        let moist_seed = derive_seed(config.seed, "moisture");
+        let detail_seed = derive_seed(config.seed, "detail");
+        let coast_seed = derive_seed(config.seed, "coast");
 
         Self {
             config,

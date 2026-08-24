@@ -13,12 +13,12 @@ function assertTauri() {
 	}
 }
 
-export function generateGlobal(seed: string) {
+export function generateGlobal(seed: number) {
 	assertTauri();
 	return invoke<TerrainGrid>("generate_global", { seed });
 }
 
-export function generateRegion(seed: string, rx: number, ry: number) {
+export function generateRegion(seed: number, rx: number, ry: number) {
 	assertTauri();
 	return invoke<TerrainGrid>("generate_region", { seed, rx, ry });
 }
