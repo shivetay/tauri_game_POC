@@ -1,0 +1,27 @@
+---
+description: Konwencje React frontend (rendering, UI)
+globs: src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# React frontend
+
+## Zasady
+
+- Frontend NIE generuje terenu — tylko renderuje dane z Rust
+- Wywołania Tauri: zawsze przez wrappery w `src/api/world.ts`
+- Custom hooks w `src/hooks/` — jeden hook per feature
+- Komponenty map w `src/components/Map/`
+
+## Canvas rendering
+
+- `TerrainGrid` → `ImageData` przez `src/map/render.ts`
+- Kolory biomów w `src/map/colors.ts` — synchronizuj z `TileType` z Rust
+- Stałe (REGION_SIZE, MACRO_RESOLUTION) w `src/utils/constants.ts`
+
+## Konwencje
+
+- Functional components only
+- TypeScript strict mode
+- Typy domenowe w `src/types/world.d.ts`
+- Nie używaj `any` — definiuj typy albo użyj `unknown`

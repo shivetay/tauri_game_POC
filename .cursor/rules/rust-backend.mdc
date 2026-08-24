@@ -1,0 +1,36 @@
+---
+description: Konwencje Rust backend (terrain generation)
+globs: src-tauri/**/*.rs
+alwaysApply: false
+---
+
+# Rust — terrain generation
+
+## Zasady
+
+- Cały terrain jest generowany w Rust — nigdy nie przenoś logiki generacji do JS
+- Zachowuj determinizm: ta sama kombinacja (seed, x, y) musi dawać identyczny wynik
+- Nowe Tauri commands dodawaj w `lib.rs`, rejestruj w `invoke_handler`
+- Typy danych zwracane do frontendu muszą implementować `serde::Serialize`
+
+## Konwencje kodu
+
+- Używaj `rayon` do równoległego generowania siatek
+- Noise helpers w `world/noise.rs`, nie duplikuj
+- Nowe biomy dodawaj w `world/biome.rs`, kolory w `src/map/colors.ts`
+- Nowe shape profile w `world/shape.rs` + aktualizuj `hash % N`
+
+## Struktura modułu world
+
+```
+world/
+  config.rs   — WorldConfig, LOD, parametry shape
+  types.rs    — TileType, TerrainCell, TerrainGrid, RegionId
+  prng.rs     — deterministyczny hash seeda
+  noise.rs    — fBm, clamp, lerp, redistribution
+  shape.rs    — profile kształtu lądu
+  biome.rs    — klasyfikacja biomów
+  sampler.rs  — główny sampler terenu
+  grid.rs     — generacja globalnej / regionalnej siatki
+  delta.rs    — stub na przyszłe zmiany terenu
+```

@@ -1,0 +1,49 @@
+---
+description: Kontekst projektu map_tests — tech stack, architektura, konwencje
+alwaysApply: true
+---
+
+# Projekt: map_tests
+
+Podgląd proceduralnej mapy świata. Desktop app.
+
+## Tech stack
+
+- **Desktop**: Tauri 2
+- **Frontend**: React 19, TypeScript 5.8, Vite 7
+- **Backend**: Rust (terrain generation)
+- **Package manager**: pnpm
+- **Noise**: `noise` (Rust), `simplex-noise` (JS — legacy)
+- **Parallelism**: `rayon` (Rust)
+
+## Architektura
+
+- Rust jest jedynym źródłem prawdy o terenie — frontend tylko renderuje
+- Frontend wywołuje Tauri commands via `invoke()` z `src/api/world.ts`
+- Canvas rendering: `TerrainGrid` → `ImageData` → `<canvas>`
+- Dwa poziomy LOD: macro (global map) i micro (region map)
+
+## Struktura katalogów
+
+```
+src/                  # React frontend
+  api/world.ts        # Tauri invoke wrappers + typy
+  hooks/              # useWorldMap, useRegionMap
+  components/Map/     # GlobalMapView, RegionMapView
+  components/Control/ # SeedControl
+  map/                # render.ts, colors.ts
+  types/              # world.d.ts
+  utils/              # constants.ts
+src-tauri/            # Rust backend
+  src/world/          # sampler, grid, noise, biome, shape, config, prng, types
+  src/lib.rs          # Tauri commands
+docs/                 # Notatki architektoniczne
+```
+
+## Kluczowe zasady domeny
+
+- **Determinizm**: ten sam seed → ten sam świat (zawsze)
+- **5 profili kształtu**: Radial, Ellipse, SquareBump, Irregular, Archipelago
+- Profil wynika z `hash(seed) % 5`
+- Wilgotność ma osobny seed: `seed:moisture`
+- App działa TYLKO jako Tauri desktop — nie jako plain web app

@@ -1,0 +1,33 @@
+---
+description: Ogólne standardy kodowania i powtarzalność wyników AI
+alwaysApply: true
+---
+
+# Standardy kodowania
+
+## Powtarzalność wyników
+
+- Przed implementacją: wypisz plan kroków i kryteria sukcesu
+- Zmiany chirurgiczne — edytuj tylko to, czego dotyczy zadanie
+- Nie "ulepszaj" sąsiedniego kodu, komentarzy ani formatowania
+- Dopasuj się do istniejącego stylu, nawet jeśli zrobiłbyś inaczej
+- Jeśli zadanie jest niejednoznaczne — zapytaj zanim zaczniesz kodować
+
+## Prostota
+
+- Minimum kodu rozwiązującego problem, nic spekulatywnego
+- Żadnych abstrakcji dla jednorazowego użycia
+- Żadnych ficzerów, o które nikt nie prosił
+- Jeśli 200 linii da się napisać w 50 — przepisz
+
+## Determinizm w domenie
+
+- Każda zmiana w generacji terenu MUSI zachować determinizm seed → world
+- Testuj z seedem `eons-world-1` (Radial) jako baseline
+- Po zmianie shape/biome/noise sprawdź że istniejące seedy dają ten sam profil
+
+## Język
+
+- Komentarze w kodzie: angielski
+- Dokumentacja projektu (README, docs/): polski
+- Cursor rules: polski
