@@ -2,9 +2,16 @@ export type TileType =
 	| "DeepWater"
 	| "Water"
 	| "Sand"
+	| "RockyShore"
+	| "Desert"
+	| "Savanna"
 	| "Grass"
+	| "Swamp"
+	| "Shrubland"
 	| "Forest"
+	| "Rainforest"
 	| "Mountain"
+	| "Tundra"
 	| "Snow";
 
 export interface TerrainCell {

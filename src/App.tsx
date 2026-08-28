@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ChunkId, RegionId } from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
+import { BiomeLegend } from "./components/Control/BiomeLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
 import { RegionMapView } from "./components/Map/RegionMapView";
@@ -87,6 +88,7 @@ function App() {
 				{regionMap.error && <p className="map-error">{regionMap.error}</p>}
 				{chunkMap.error && <p className="map-error">{chunkMap.error}</p>}
 				{isLoading && <p className="map-loading">Generowanie mapy…</p>}
+				<BiomeLegend />
 			</aside>
 		</main>
 	);

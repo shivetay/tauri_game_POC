@@ -10,6 +10,13 @@ pub enum TileType {
     Forest = 4,
     Mountain = 5,
     Snow = 6,
+    RockyShore = 7,
+    Desert = 8,
+    Savanna = 9,
+    Swamp = 10,
+    Shrubland = 11,
+    Rainforest = 12,
+    Tundra = 13,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
