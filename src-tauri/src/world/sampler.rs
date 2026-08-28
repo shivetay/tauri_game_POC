@@ -2,10 +2,10 @@ use noise::SuperSimplex;
 
 use crate::world::biome::biome;
 use crate::world::config::{LodLevel, WorldConfig};
-use crate::world::noise::{fbm, redistribute, clamp01};
+use crate::world::noise::{clamp01, fbm, redistribute};
+use crate::world::prng::{derive_seed, hash_seed};
 use crate::world::shape::{apply_shape, shape_value};
 use crate::world::types::{RegionBounds, TerrainCell};
-use crate::world::prng::{derive_seed, hash_seed};
 
 pub struct TerrainSampler {
     config: WorldConfig,
@@ -108,12 +108,7 @@ impl TerrainSampler {
     }
 
     /// Elewacja micro z blendem na brzegu regionu
-    pub fn elevation_at_region(
-        &self,
-        world_x: f64,
-        world_y: f64,
-        bounds: RegionBounds,
-    ) -> f32 {
+    pub fn elevation_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> f32 {
         let macro_e = self.elevation_at(world_x, world_y, LodLevel::Macro);
         let micro_e = self.elevation_at(world_x, world_y, LodLevel::Micro);
         let blend = self.region_edge_blend(world_x, world_y, bounds);

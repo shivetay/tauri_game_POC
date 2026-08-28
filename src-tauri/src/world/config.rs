@@ -15,16 +15,18 @@ pub enum ShapeProfile {
     SquareBump,
     Irregular,
     Archipelago,
+    Continents,
 }
 
 impl ShapeProfile {
   pub fn from_index(index: u32) -> Self {
-    match index % 5 {
+    match index % 6 {
       0 => Self::Radial,
       1 => Self::Ellipse,
       2 => Self::SquareBump,
       3 => Self::Irregular,
-      _ => Self::Archipelago,
+      4 => Self::Archipelago,
+      _ => Self::Continents,
     }
   }
 }
@@ -53,7 +55,7 @@ pub struct WorldConfig {
 impl Default for WorldConfig {
   fn default() -> Self {
     Self {
-      seed: 5,
+      seed: 6,
       world_width: 512,
       world_height: 512,
       region_size: 64,
@@ -81,7 +83,7 @@ impl WorldConfig {
 
   pub fn resolved_shape_profile(&self) -> ShapeProfile {
       self.shape_profile.unwrap_or_else(|| {
-          ShapeProfile::from_index((self.seed % 5) as u32)
+          ShapeProfile::from_index((self.seed % 6) as u32)
       })
   }
 }

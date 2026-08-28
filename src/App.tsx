@@ -9,13 +9,20 @@ import "./styles/MapScreen.css";
 import "./styles/App.css";
 
 function App() {
-	const [seed, setSeed] = useState(5);
-	const [draftSeed, setDraftSeed] = useState("5");
+	const [seed, setSeed] = useState(6);
+	const [draftSeed, setDraftSeed] = useState("6");
 	const [selectedRegion, setSelectedRegion] = useState<RegionId | null>(null);
 	const [seedError, setSeedError] = useState<string | null>(null);
 
 	const { grid, loading, error } = useWorldMap(seed);
 	const regionMap = useRegionMap(seed, selectedRegion);
+
+	function applySeedValue(nextSeed: number) {
+		setDraftSeed(String(nextSeed));
+		setSeed(nextSeed);
+		setSeedError(null);
+		setSelectedRegion(null);
+	}
 
 	function applySeed() {
 		const parsedSeed = Number(draftSeed);
@@ -24,9 +31,13 @@ function App() {
 			return;
 		}
 
-		setSeed(parsedSeed);
-		setSeedError(null);
-		setSelectedRegion(null);
+		applySeedValue(parsedSeed);
+	}
+
+	function createRandomSeed() {
+		const bytes = new Uint32Array(1);
+		crypto.getRandomValues(bytes);
+		applySeedValue(bytes[0]);
 	}
 
 	return (
@@ -48,6 +59,7 @@ function App() {
 					seed={draftSeed}
 					onSeedChange={setDraftSeed}
 					onRegenerate={applySeed}
+					onRandomSeed={createRandomSeed}
 					loading={loading || regionMap.loading}
 				/>
 				{seedError && <p className="map-error">{seedError}</p>}

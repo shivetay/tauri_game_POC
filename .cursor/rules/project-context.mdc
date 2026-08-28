@@ -43,7 +43,7 @@ docs/                 # Notatki architektoniczne
 ## Kluczowe zasady domeny
 
 - **Determinizm**: ten sam seed → ten sam świat (zawsze)
-- **5 profili kształtu**: Radial, Ellipse, SquareBump, Irregular, Archipelago
-- Profil wynika z `hash(seed) % 5`
+- **6 profili kształtu**: Radial, Ellipse, SquareBump, Irregular, Archipelago, Continents
+- Profil wynika z `seed % 6`
 - Wilgotność ma osobny seed: `seed:moisture`
 - App działa TYLKO jako Tauri desktop — nie jako plain web app

@@ -4,6 +4,7 @@ interface SeedControlProps {
 	seed: string;
 	onSeedChange: (seed: string) => void;
 	onRegenerate: () => void;
+	onRandomSeed: () => void;
 	loading: boolean;
 }
 
@@ -11,6 +12,7 @@ export function SeedControl({
 	seed,
 	onSeedChange,
 	onRegenerate,
+	onRandomSeed,
 	loading,
 }: SeedControlProps) {
 	const [showSeedInfo, setShowSeedInfo] = useState(false);
@@ -27,10 +29,13 @@ export function SeedControl({
 						step="1"
 						value={seed}
 						onChange={(e) => onSeedChange(e.target.value)}
-						placeholder="5"
+						placeholder="6"
 					/>
 				</label>
 				<div className="seed-actions">
+					<button type="button" onClick={onRandomSeed} disabled={loading}>
+						Losuj seed
+					</button>
 					<button type="button" onClick={onRegenerate} disabled={loading}>
 						{loading ? "Generowanie…" : "Regenerate"}
 					</button>
@@ -50,8 +55,17 @@ export function SeedControl({
 						</p>
 						<ul>
 							<li>
-								<strong>profil kształtu</strong> — <code>seed % 5</code> (0
-								Radial, 1 Ellipse, 2 SquareBump, 3 Irregular, 4 Archipelago)
+								<strong>profil kształtu</strong> — <code>seed % 6</code> (0
+								Radial, 1 Ellipse, 2 SquareBump, 3 Irregular, 4 Archipelago, 5
+								Continents)
+							</li>
+							<li>
+								<strong>pojedynczy ląd</strong> — Radial / Ellipse / Irregular:
+								z seeda wychodzi mała wyspa albo jeden kontynent
+							</li>
+							<li>
+								<strong>morze wewnętrzne</strong> — SquareBump: z seeda puste
+								albo z lądem na wodzie
 							</li>
 							<li>
 								<strong>wysokość terenu</strong> — pochodna seeda (elevation)
