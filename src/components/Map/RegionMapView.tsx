@@ -1,37 +1,40 @@
-import { useEffect, useRef } from "react";
-import type { RegionId, TerrainGrid } from "../../api/world";
-import { terrainGridToImageData } from "../../map/render";
+import {
+	CHUNKS_PER_REGION,
+	type ChunkId,
+	type RegionId,
+	type TerrainGrid,
+} from "../../api/world";
+import { GridMapView } from "./GridMapView";
 
 interface RegionMapViewProps {
 	region: RegionId;
 	grid: TerrainGrid | null;
 	onBack: () => void;
+	onChunkSelect: (chunk: ChunkId) => void;
 }
 
-export function RegionMapView({ region, grid, onBack }: RegionMapViewProps) {
-	const canvasRef = useRef<HTMLCanvasElement>(null);
-
-	useEffect(() => {
-		if (!grid || !canvasRef.current) return;
-		const ctx = canvasRef.current.getContext("2d");
-		if (!ctx) return;
-		const imageData = terrainGridToImageData(grid);
-		canvasRef.current.width = grid.width;
-		canvasRef.current.height = grid.height;
-		ctx.putImageData(imageData, 0, 0);
-	}, [grid]);
+export function RegionMapView({
+	region,
+	grid,
+	onBack,
+	onChunkSelect,
+}: RegionMapViewProps) {
+	const cellSize = grid ? grid.width / CHUNKS_PER_REGION : 64;
 
 	return (
-		<div className="map-view">
-			<div className="map-view-header">
+		<GridMapView
+			grid={grid}
+			cellSize={cellSize}
+			idleLabel={`Region (${region.rx}, ${region.ry}) — siatka ${CHUNKS_PER_REGION}×${CHUNKS_PER_REGION}, kliknij obszar`}
+			hoverLabel={(cell) =>
+				`Obszar (${cell.cx}, ${cell.cy}) — kliknij, aby powiększyć`
+			}
+			onCellSelect={(cell) => onChunkSelect({ cx: cell.cx, cy: cell.cy })}
+			header={
 				<button type="button" onClick={onBack}>
-					← Back to world
+					← Mapa świata
 				</button>
-				<p>
-					Region ({region.rx}, {region.ry}) — więcej detali
-				</p>
-			</div>
-			<canvas ref={canvasRef} className="map-canvas" />
-		</div>
+			}
+		/>
 	);
 }

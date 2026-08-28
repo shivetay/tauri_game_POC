@@ -3,8 +3,8 @@ mod world;
 use std::sync::Mutex;
 use tauri::State;
 use world::config::WorldConfig;
-use world::grid::{generate_global_grid, generate_region_grid};
-use world::types::{RegionId, TerrainGrid};
+use world::grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
+use world::types::{ChunkId, RegionId, TerrainGrid};
 
 struct WorldState {
     config: WorldConfig,
@@ -42,12 +42,31 @@ fn generate_region(
     generate_region_grid(config, RegionId { rx, ry })
 }
 
+#[tauri::command]
+fn generate_chunk(
+    state: State<'_, Mutex<WorldState>>,
+    seed: u64,
+    rx: u32,
+    ry: u32,
+    cx: u32,
+    cy: u32,
+) -> TerrainGrid {
+    let guard = state.lock().unwrap();
+    let mut config = guard.config.clone();
+    config.seed = seed;
+    generate_chunk_grid(
+        config,
+        RegionId { rx, ry },
+        ChunkId { cx, cy },
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(WorldState::default()))
-        .invoke_handler(tauri::generate_handler![generate_global, generate_region])
+        .invoke_handler(tauri::generate_handler![generate_global, generate_region, generate_chunk])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

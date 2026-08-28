@@ -32,6 +32,12 @@ pub struct RegionId {
     pub ry: u32,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ChunkId {
+    pub cx: u32,
+    pub cy: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RegionBounds {
     pub world_x0: f32,
@@ -49,6 +55,22 @@ impl RegionBounds {
             world_y0: y0,
             world_x1: x0 + region_size as f32,
             world_y1: y0 + region_size as f32,
+        }
+    }
+
+    pub fn from_chunk(
+        region: RegionId,
+        chunk: ChunkId,
+        region_size: u32,
+        chunk_size: u32,
+    ) -> Self {
+        let x0 = region.rx as f32 * region_size as f32 + chunk.cx as f32 * chunk_size as f32;
+        let y0 = region.ry as f32 * region_size as f32 + chunk.cy as f32 * chunk_size as f32;
+        Self {
+            world_x0: x0,
+            world_y0: y0,
+            world_x1: x0 + chunk_size as f32,
+            world_y1: y0 + chunk_size as f32,
         }
     }
 }

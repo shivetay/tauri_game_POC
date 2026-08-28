@@ -9,5 +9,5 @@ pub mod shape;
 pub mod types;
 
 pub use config::{LodLevel, ShapeProfile, WorldConfig};
-pub use grid::{generate_global_grid, generate_region_grid};
-pub use types::{RegionId, TerrainGrid};
+pub use grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
+pub use types::{ChunkId, RegionId, TerrainGrid};

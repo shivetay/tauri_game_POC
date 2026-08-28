@@ -19,6 +19,11 @@ export interface TerrainGrid {
 	cells: TerrainCell[];
 }
 
+export interface ChunkId {
+	cx: number;
+	cy: number;
+}
+
 export interface RegionId {
 	rx: number;
 	ry: number;

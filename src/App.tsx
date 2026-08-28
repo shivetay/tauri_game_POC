@@ -1,8 +1,10 @@
 import { useState } from "react";
-import type { RegionId } from "./api/world";
+import type { ChunkId, RegionId } from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
+import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
 import { RegionMapView } from "./components/Map/RegionMapView";
+import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
 import { useWorldMap } from "./hooks/useWorldMap";
 import "./styles/MapScreen.css";
@@ -12,16 +14,19 @@ function App() {
 	const [seed, setSeed] = useState(6);
 	const [draftSeed, setDraftSeed] = useState("6");
 	const [selectedRegion, setSelectedRegion] = useState<RegionId | null>(null);
+	const [selectedChunk, setSelectedChunk] = useState<ChunkId | null>(null);
 	const [seedError, setSeedError] = useState<string | null>(null);
 
 	const { grid, loading, error } = useWorldMap(seed);
 	const regionMap = useRegionMap(seed, selectedRegion);
+	const chunkMap = useChunkMap(seed, selectedRegion, selectedChunk);
 
 	function applySeedValue(nextSeed: number) {
 		setDraftSeed(String(nextSeed));
 		setSeed(nextSeed);
 		setSeedError(null);
 		setSelectedRegion(null);
+		setSelectedChunk(null);
 	}
 
 	function applySeed() {
@@ -40,17 +45,32 @@ function App() {
 		applySeedValue(bytes[0]);
 	}
 
+	function selectRegion(region: RegionId) {
+		setSelectedRegion(region);
+		setSelectedChunk(null);
+	}
+
+	const isLoading = loading || regionMap.loading || chunkMap.loading;
+
 	return (
 		<main className="map-screen">
 			<div className="map-area">
-				{selectedRegion ? (
+				{selectedRegion && selectedChunk ? (
+					<ChunkMapView
+						region={selectedRegion}
+						chunk={selectedChunk}
+						grid={chunkMap.grid}
+						onBack={() => setSelectedChunk(null)}
+					/>
+				) : selectedRegion ? (
 					<RegionMapView
 						region={selectedRegion}
 						grid={regionMap.grid}
 						onBack={() => setSelectedRegion(null)}
+						onChunkSelect={setSelectedChunk}
 					/>
 				) : (
-					<GlobalMapView grid={grid} onRegionSelect={setSelectedRegion} />
+					<GlobalMapView grid={grid} onRegionSelect={selectRegion} />
 				)}
 			</div>
 
@@ -60,14 +80,13 @@ function App() {
 					onSeedChange={setDraftSeed}
 					onRegenerate={applySeed}
 					onRandomSeed={createRandomSeed}
-					loading={loading || regionMap.loading}
+					loading={isLoading}
 				/>
 				{seedError && <p className="map-error">{seedError}</p>}
 				{error && <p className="map-error">{error}</p>}
 				{regionMap.error && <p className="map-error">{regionMap.error}</p>}
-				{(loading || regionMap.loading) && (
-					<p className="map-loading">Generowanie mapy…</p>
-				)}
+				{chunkMap.error && <p className="map-error">{chunkMap.error}</p>}
+				{isLoading && <p className="map-loading">Generowanie mapy…</p>}
 			</aside>
 		</main>
 	);
