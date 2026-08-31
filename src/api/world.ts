@@ -64,15 +64,59 @@ export interface GridCell {
 	cy: number;
 }
 
+export interface CanvasPixel {
+	px: number;
+	py: number;
+}
+
+/** Map client coords to canvas bitmap pixels (accounts for object-fit: contain letterboxing). */
+export function canvasClientToPixel(
+	clientX: number,
+	clientY: number,
+	canvas: HTMLCanvasElement,
+): CanvasPixel | null {
+	const rect = canvas.getBoundingClientRect();
+	const bitmapW = canvas.width;
+	const bitmapH = canvas.height;
+	if (bitmapW === 0 || bitmapH === 0 || rect.width === 0 || rect.height === 0) {
+		return null;
+	}
+
+	const localX = clientX - rect.left;
+	const localY = clientY - rect.top;
+	const scale = Math.min(rect.width / bitmapW, rect.height / bitmapH);
+	const renderedW = bitmapW * scale;
+	const renderedH = bitmapH * scale;
+	const offsetX = (rect.width - renderedW) / 2;
+	const offsetY = (rect.height - renderedH) / 2;
+
+	if (
+		localX < offsetX ||
+		localX > offsetX + renderedW ||
+		localY < offsetY ||
+		localY > offsetY + renderedH
+	) {
+		return null;
+	}
+
+	return {
+		px: ((localX - offsetX) / renderedW) * bitmapW,
+		py: ((localY - offsetY) / renderedH) * bitmapH,
+	};
+}
+
 export function pixelToCell(
 	px: number,
 	py: number,
-	canvasSize: number,
+	canvasWidth: number,
+	canvasHeight: number,
 	cellSize: number,
 ): GridCell {
+	const cols = canvasWidth / cellSize;
+	const rows = canvasHeight / cellSize;
 	return {
-		cx: Math.min(Math.floor(px / cellSize), canvasSize / cellSize - 1),
-		cy: Math.min(Math.floor(py / cellSize), canvasSize / cellSize - 1),
+		cx: Math.min(Math.max(0, Math.floor(px / cellSize)), cols - 1),
+		cy: Math.min(Math.max(0, Math.floor(py / cellSize)), rows - 1),
 	};
 }
 
@@ -81,11 +125,13 @@ export function pixelToRegion(
 	py: number,
 	canvasSize: number,
 ): RegionId {
-	const cell = pixelToCell(px, py, canvasSize, canvasSize / CHUNKS_PER_REGION);
+	const cellSize = canvasSize / CHUNKS_PER_REGION;
+	const cell = pixelToCell(px, py, canvasSize, canvasSize, cellSize);
 	return { rx: cell.cx, ry: cell.cy };
 }
 
 export function pixelToChunk(px: number, py: number, canvasSize: number): ChunkId {
-	const cell = pixelToCell(px, py, canvasSize, canvasSize / CHUNKS_PER_REGION);
+	const cellSize = canvasSize / CHUNKS_PER_REGION;
+	const cell = pixelToCell(px, py, canvasSize, canvasSize, cellSize);
 	return { cx: cell.cx, cy: cell.cy };
 }

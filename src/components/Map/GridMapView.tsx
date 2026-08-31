@@ -1,6 +1,6 @@
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { GridCell, TerrainGrid } from "../../api/world";
-import { pixelToCell } from "../../api/world";
+import { canvasClientToPixel, pixelToCell } from "../../api/world";
 import {
 	drawCellHighlight,
 	drawRegionGrid,
@@ -67,18 +67,37 @@ export function GridMapView({
 		paint(null);
 	}, [grid, paint]);
 
-	function pointerToCell(e: MouseEvent<HTMLCanvasElement>): GridCell {
+	function pointerToCell(e: MouseEvent<HTMLCanvasElement>): GridCell | null {
 		const canvas = canvasRef.current;
-		if (!canvas) return { cx: 0, cy: 0 };
+		if (!canvas) return null;
 
-		const rect = canvas.getBoundingClientRect();
-		const px = ((e.clientX - rect.left) / rect.width) * canvas.width;
-		const py = ((e.clientY - rect.top) / rect.height) * canvas.height;
-		return pixelToCell(px, py, canvas.width, cellSize);
+		const pixel = canvasClientToPixel(e.clientX, e.clientY, canvas);
+		if (!pixel) return null;
+
+		return pixelToCell(
+			pixel.px,
+			pixel.py,
+			canvas.width,
+			canvas.height,
+			cellSize,
+		);
+	}
+
+	function clearHover() {
+		if (!hoverRef.current) return;
+
+		hoverRef.current = null;
+		setHoveredCell(null);
+		paint(null);
 	}
 
 	function handleMouseMove(e: MouseEvent<HTMLCanvasElement>) {
 		const cell = pointerToCell(e);
+		if (!cell) {
+			clearHover();
+			return;
+		}
+
 		const prev = hoverRef.current;
 		if (prev?.cx === cell.cx && prev?.cy === cell.cy) return;
 
@@ -88,15 +107,12 @@ export function GridMapView({
 	}
 
 	function handleMouseLeave() {
-		if (!hoverRef.current) return;
-
-		hoverRef.current = null;
-		setHoveredCell(null);
-		paint(null);
+		clearHover();
 	}
 
 	function handleClick(e: MouseEvent<HTMLCanvasElement>) {
-		onCellSelect?.(pointerToCell(e));
+		const cell = pointerToCell(e);
+		if (cell) onCellSelect?.(cell);
 	}
 
 	return (

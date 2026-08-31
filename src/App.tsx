@@ -8,6 +8,7 @@ import { SeedControl } from "./components/Control/SeedControl";
 import { BiomeLegend } from "./components/Control/BiomeLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
+import { MapLoadingOverlay } from "./components/Map/MapLoadingOverlay";
 import { RegionMapView } from "./components/Map/RegionMapView";
 import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
@@ -66,10 +67,23 @@ function App() {
 	}
 
 	const isLoading = loading || regionMap.loading || chunkMap.loading;
+	const mapLoading =
+		selectedRegion && selectedChunk
+			? chunkMap.loading
+			: selectedRegion
+				? regionMap.loading
+				: loading;
+	const mapLoadingLabel =
+		selectedRegion && selectedChunk
+			? "Generowanie obszaru…"
+			: selectedRegion
+				? "Generowanie regionu…"
+				: "Generowanie mapy świata…";
 
 	return (
 		<main className="map-screen">
 			<div className="map-area">
+				{mapLoading && <MapLoadingOverlay label={mapLoadingLabel} />}
 				{selectedRegion && selectedChunk ? (
 					<ChunkMapView
 						region={selectedRegion}
