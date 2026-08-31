@@ -26,6 +26,23 @@
   font-size: 0.85rem;
 }
 
+.param-slider {
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.param-slider input[type="range"] {
+  flex: 1;
+  min-width: 5rem;
+}
+
+.param-value {
+  min-width: 2rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .seed-control input {
   width: 100%;
   min-width: 0;

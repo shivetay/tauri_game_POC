@@ -2,9 +2,11 @@ use noise::SuperSimplex;
 
 use crate::world::biome::biome;
 use crate::world::config::{LodLevel, WorldConfig};
-use crate::world::noise::{clamp01, fbm, redistribute};
+use crate::world::noise::{clamp01, fbm, lerp, redistribute, smoothstep};
 use crate::world::prng::{derive_seed, hash_seed};
-use crate::world::shape::{apply_shape, shape_value};
+use crate::world::elevation::{norm_to_meters, preserve_macro_sea_class, SEA_LEVEL_NORM};
+use crate::world::ridge::orogeny_delta;
+use crate::world::shape::shape_value;
 use crate::world::types::{RegionBounds, TerrainCell};
 
 pub struct TerrainSampler {
@@ -13,6 +15,8 @@ pub struct TerrainSampler {
     moist_noise: SuperSimplex,
     detail_noise: SuperSimplex,
     coast_noise: SuperSimplex,
+    ridge_noise: SuperSimplex,
+    ridge_warp_noise: SuperSimplex,
 }
 
 impl TerrainSampler {
@@ -21,6 +25,8 @@ impl TerrainSampler {
         let moist_seed = derive_seed(config.seed, "moisture");
         let detail_seed = derive_seed(config.seed, "detail");
         let coast_seed = derive_seed(config.seed, "coast");
+        let ridge_seed = derive_seed(config.seed, "ridge");
+        let ridge_warp_seed = derive_seed(config.seed, "ridge-warp");
 
         Self {
             config,
@@ -28,10 +34,12 @@ impl TerrainSampler {
             moist_noise: SuperSimplex::new(moist_seed),
             detail_noise: SuperSimplex::new(detail_seed),
             coast_noise: SuperSimplex::new(coast_seed),
+            ridge_noise: SuperSimplex::new(ridge_seed),
+            ridge_warp_noise: SuperSimplex::new(ridge_warp_seed),
         }
     }
 
-    pub fn elevation_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> f32 {
+    pub fn elevation_norm_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> f32 {
         let c = &self.config;
         let wx = (world_x / c.world_width as f64) * c.scale as f64;
         let wy = (world_y / c.world_height as f64) * c.scale as f64;
@@ -47,12 +55,30 @@ impl TerrainSampler {
 
         let profile = c.resolved_shape_profile();
         let shape = shape_value(profile, world_x, world_y, c, &self.coast_noise);
-        let shaped = apply_shape(raw, shape, f64::from(c.island_mix));
-        let mut e = redistribute(
-            shaped,
-            c.redistribution_exponent as f64,
-            c.redistribution_fudge as f64,
+        let land_t = f64::from(c.land_size.clamp(0.0, 1.0));
+        let land_factor = smoothstep(lerp(0.40, 0.30, land_t), lerp(0.46, 0.42, land_t), shape);
+
+        let rough = f64::from(c.terrain_roughness.clamp(0.0, 1.0));
+        let continental = redistribute(raw, lerp(1.0, 1.35, rough), 1.0);
+        let land_base = 0.38 + continental * lerp(0.06, 0.18, rough);
+        let ocean_base = 0.10 + continental * lerp(0.04, 0.10, rough);
+        let mut e = lerp(ocean_base, land_base, land_factor);
+
+        e += orogeny_delta(
+            &self.ridge_noise,
+            &self.ridge_warp_noise,
+            c.seed,
+            world_x,
+            world_y,
+            c.world_width as f64,
+            c.world_height as f64,
+            land_factor,
+            f64::from(c.orogeny_strength),
         );
+
+        if land_factor < 0.25 {
+            e = e.min(f64::from(SEA_LEVEL_NORM) - 0.03);
+        }
 
         if lod == LodLevel::Micro {
             let detail = fbm(
@@ -69,29 +95,34 @@ impl TerrainSampler {
         clamp01(e) as f32
     }
 
+    pub fn elevation_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> f32 {
+        norm_to_meters(self.elevation_norm_at(world_x, world_y, lod))
+    }
+
+    pub fn cell_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> TerrainCell {
+        let elevation = self.elevation_at(world_x, world_y, lod);
+        let moisture = self.moisture_at(world_x, world_y);
+        TerrainCell {
+            elevation,
+            moisture,
+            biome: biome(elevation, moisture),
+        }
+    }
+
     pub fn moisture_at(&self, world_x: f64, world_y: f64) -> f32 {
         let c = &self.config;
         let wx = (world_x / c.world_width as f64) * c.scale as f64;
         let wy = (world_y / c.world_height as f64) * c.scale as f64;
-        fbm(
+        let raw_m = fbm(
             &self.moist_noise,
             wx,
             wy,
             c.octaves,
             c.persistence as f64,
             c.lacunarity as f64,
-        ) as f32
-    }
-
-    pub fn cell_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> TerrainCell {
-        let elevation = self.elevation_at(world_x, world_y, lod);
-        let moisture = self.moisture_at(world_x, world_y);
-        let biome_type = biome(elevation, moisture);
-        TerrainCell {
-            elevation,
-            moisture,
-            biome: biome_type,
-        }
+        );
+        let m_strength = f64::from(c.moisture_strength.clamp(0.0, 1.0));
+        clamp01(0.5 + (raw_m - 0.5) * m_strength) as f32
     }
 
     /// Tłumi detail noise na krawędzi regionu (0 = brzeg, 1 = środek)
@@ -109,10 +140,11 @@ impl TerrainSampler {
 
     /// Elewacja micro z blendem na brzegu regionu
     pub fn elevation_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> f32 {
-        let macro_e = self.elevation_at(world_x, world_y, LodLevel::Macro);
-        let micro_e = self.elevation_at(world_x, world_y, LodLevel::Micro);
+        let macro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Macro);
+        let micro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Micro);
         let blend = self.region_edge_blend(world_x, world_y, bounds);
-        macro_e + (micro_e - macro_e) * blend
+        let norm = preserve_macro_sea_class(macro_n, macro_n + (micro_n - macro_n) * blend);
+        norm_to_meters(norm)
     }
 
     pub fn cell_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> TerrainCell {

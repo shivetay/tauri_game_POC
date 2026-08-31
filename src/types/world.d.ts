@@ -15,6 +15,7 @@ export type TileType =
 	| "Snow";
 
 export interface TerrainCell {
+	/** Elevation in meters; sea level = 0, max peak = 10_000 m. */
 	elevation: number;
 	moisture: number;
 	biome: TileType;

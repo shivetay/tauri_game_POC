@@ -2,7 +2,7 @@ mod world;
 
 use std::sync::Mutex;
 use tauri::State;
-use world::config::WorldConfig;
+use world::config::{TerrainGenParams, WorldConfig};
 use world::grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
 use world::types::{ChunkId, RegionId, TerrainGrid};
 
@@ -20,42 +20,50 @@ impl Default for WorldState {
     }
 }
 
+fn config_with(seed: u64, params: TerrainGenParams) -> WorldConfig {
+    let mut config = WorldConfig::default();
+    config.seed = seed;
+    params.apply_to(&mut config);
+    config
+}
+
 #[tauri::command]
-fn generate_global(state: State<'_, Mutex<WorldState>>, seed: u64) -> TerrainGrid {
+fn generate_global(
+    state: State<'_, Mutex<WorldState>>,
+    seed: u64,
+    params: TerrainGenParams,
+) -> TerrainGrid {
     let mut guard = state.lock().unwrap();
-    guard.config.seed = seed;
-    let grid = generate_global_grid(guard.config.clone());
+    let config = config_with(seed, params);
+    guard.config = config.clone();
+    let grid = generate_global_grid(config);
     guard.global_cache = Some(grid.clone());
     grid
 }
 
 #[tauri::command]
 fn generate_region(
-    state: State<'_, Mutex<WorldState>>,
+    _state: State<'_, Mutex<WorldState>>,
     seed: u64,
+    params: TerrainGenParams,
     rx: u32,
     ry: u32,
 ) -> TerrainGrid {
-    let guard = state.lock().unwrap();
-    let mut config = guard.config.clone();
-    config.seed = seed;
-    generate_region_grid(config, RegionId { rx, ry })
+    generate_region_grid(config_with(seed, params), RegionId { rx, ry })
 }
 
 #[tauri::command]
 fn generate_chunk(
-    state: State<'_, Mutex<WorldState>>,
+    _state: State<'_, Mutex<WorldState>>,
     seed: u64,
+    params: TerrainGenParams,
     rx: u32,
     ry: u32,
     cx: u32,
     cy: u32,
 ) -> TerrainGrid {
-    let guard = state.lock().unwrap();
-    let mut config = guard.config.clone();
-    config.seed = seed;
     generate_chunk_grid(
-        config,
+        config_with(seed, params),
         RegionId { rx, ry },
         ChunkId { cx, cy },
     )

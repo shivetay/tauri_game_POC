@@ -1,5 +1,9 @@
 import { useState } from "react";
 import type { ChunkId, RegionId } from "./api/world";
+import {
+	DEFAULT_TERRAIN_PARAMS,
+	type TerrainParams,
+} from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
 import { BiomeLegend } from "./components/Control/BiomeLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
@@ -14,13 +18,22 @@ import "./styles/App.css";
 function App() {
 	const [seed, setSeed] = useState(6);
 	const [draftSeed, setDraftSeed] = useState("6");
+	const [terrainParams, setTerrainParams] =
+		useState<TerrainParams>(DEFAULT_TERRAIN_PARAMS);
+	const [draftParams, setDraftParams] =
+		useState<TerrainParams>(DEFAULT_TERRAIN_PARAMS);
 	const [selectedRegion, setSelectedRegion] = useState<RegionId | null>(null);
 	const [selectedChunk, setSelectedChunk] = useState<ChunkId | null>(null);
 	const [seedError, setSeedError] = useState<string | null>(null);
 
-	const { grid, loading, error } = useWorldMap(seed);
-	const regionMap = useRegionMap(seed, selectedRegion);
-	const chunkMap = useChunkMap(seed, selectedRegion, selectedChunk);
+	const { grid, loading, error } = useWorldMap(seed, terrainParams);
+	const regionMap = useRegionMap(seed, terrainParams, selectedRegion);
+	const chunkMap = useChunkMap(
+		seed,
+		terrainParams,
+		selectedRegion,
+		selectedChunk,
+	);
 
 	function applySeedValue(nextSeed: number) {
 		setDraftSeed(String(nextSeed));
@@ -37,6 +50,7 @@ function App() {
 			return;
 		}
 
+		setTerrainParams(draftParams);
 		applySeedValue(parsedSeed);
 	}
 
@@ -79,6 +93,8 @@ function App() {
 				<SeedControl
 					seed={draftSeed}
 					onSeedChange={setDraftSeed}
+					params={draftParams}
+					onParamsChange={setDraftParams}
 					onRegenerate={applySeed}
 					onRandomSeed={createRandomSeed}
 					loading={isLoading}

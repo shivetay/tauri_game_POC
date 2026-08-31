@@ -4,10 +4,12 @@ import {
 	type ChunkId,
 	type RegionId,
 	type TerrainGrid,
+	type TerrainParams,
 } from "../api/world";
 
 export function useChunkMap(
 	seed: number,
+	params: TerrainParams,
 	region: RegionId | null,
 	chunk: ChunkId | null,
 ) {
@@ -22,6 +24,7 @@ export function useChunkMap(
 		try {
 			const result = await generateChunk(
 				seed,
+				params,
 				region.rx,
 				region.ry,
 				chunk.cx,
@@ -33,7 +36,7 @@ export function useChunkMap(
 		} finally {
 			setLoading(false);
 		}
-	}, [seed, region, chunk]);
+	}, [seed, params, region, chunk]);
 
 	useEffect(() => {
 		reload();

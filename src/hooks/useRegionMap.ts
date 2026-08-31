@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { generateRegion, type RegionId, type TerrainGrid } from "../api/world";
+import {
+	generateRegion,
+	type RegionId,
+	type TerrainGrid,
+	type TerrainParams,
+} from "../api/world";
 
-export function useRegionMap(seed: number, region: RegionId | null) {
+export function useRegionMap(
+	seed: number,
+	params: TerrainParams,
+	region: RegionId | null,
+) {
 	const [grid, setGrid] = useState<TerrainGrid | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -11,14 +20,19 @@ export function useRegionMap(seed: number, region: RegionId | null) {
 		setLoading(true);
 		setError(null);
 		try {
-			const result = await generateRegion(seed, region.rx, region.ry);
+			const result = await generateRegion(
+				seed,
+				params,
+				region.rx,
+				region.ry,
+			);
 			setGrid(result);
 		} catch (e) {
 			setError(String(e));
 		} finally {
 			setLoading(false);
 		}
-	}, [seed, region]);
+	}, [seed, params, region]);
 
 	useEffect(() => {
 		reload();

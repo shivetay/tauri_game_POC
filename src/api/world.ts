@@ -1,10 +1,13 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ChunkId, RegionId, TerrainGrid } from "../types/world";
+import type { TerrainParams } from "../types/terrainParams";
 import {
 	CHUNKS_PER_REGION,
 } from "../utils/constants";
 
 export type { ChunkId, RegionId, TerrainCell, TerrainGrid, TileType } from "../types/world";
+export type { TerrainParams } from "../types/terrainParams";
+export { DEFAULT_TERRAIN_PARAMS } from "../types/terrainParams";
 export {
 	CHUNK_SIZE,
 	CHUNKS_PER_REGION,
@@ -22,25 +25,38 @@ function assertTauri() {
 	}
 }
 
-export function generateGlobal(seed: number) {
+export function generateGlobal(seed: number, params: TerrainParams) {
 	assertTauri();
-	return invoke<TerrainGrid>("generate_global", { seed });
+	return invoke<TerrainGrid>("generate_global", { seed, params });
 }
 
-export function generateRegion(seed: number, rx: number, ry: number) {
+export function generateRegion(
+	seed: number,
+	params: TerrainParams,
+	rx: number,
+	ry: number,
+) {
 	assertTauri();
-	return invoke<TerrainGrid>("generate_region", { seed, rx, ry });
+	return invoke<TerrainGrid>("generate_region", { seed, params, rx, ry });
 }
 
 export function generateChunk(
 	seed: number,
+	params: TerrainParams,
 	rx: number,
 	ry: number,
 	cx: number,
 	cy: number,
 ) {
 	assertTauri();
-	return invoke<TerrainGrid>("generate_chunk", { seed, rx, ry, cx, cy });
+	return invoke<TerrainGrid>("generate_chunk", {
+		seed,
+		params,
+		rx,
+		ry,
+		cx,
+		cy,
+	});
 }
 
 export interface GridCell {

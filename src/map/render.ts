@@ -1,12 +1,56 @@
-import type { RegionId, TerrainGrid } from "../types/world";
+import type { RegionId, TerrainGrid, TileType } from "../types/world";
+import { HIGH_ELEVATION_M, MAX_ELEVATION_M } from "../utils/constants";
 import { biomeToRgb } from "./colors";
+
+function lerpByte(a: number, b: number, t: number): number {
+	return Math.round(a + (b - a) * t);
+}
+
+function shadeHighElevation(
+	biome: TileType,
+	elevationM: number,
+	base: [number, number, number],
+): [number, number, number] {
+	if (
+		biome !== "Mountain" &&
+		biome !== "Snow" &&
+		biome !== "Tundra"
+	) {
+		return base;
+	}
+
+	const t = Math.min(
+		1,
+		Math.max(0, (elevationM - HIGH_ELEVATION_M) / (MAX_ELEVATION_M - HIGH_ELEVATION_M)),
+	);
+	const [r, g, b] = base;
+
+	if (biome === "Snow") {
+		return [
+			lerpByte(r, 0xf8, t),
+			lerpByte(g, 0xf8, t),
+			lerpByte(b, 0xff, t),
+		];
+	}
+
+	return [
+		lerpByte(r, 0x9a, t),
+		lerpByte(g, 0x9a, t),
+		lerpByte(b, 0xa8, t),
+	];
+}
 
 export function terrainGridToImageData(grid: TerrainGrid): ImageData {
 	const { width, height, cells } = grid;
 	const pixels = new Uint8ClampedArray(width * height * 4);
 
 	for (let i = 0; i < cells.length; i++) {
-		const [r, g, b] = biomeToRgb(cells[i].biome);
+		const cell = cells[i];
+		const [r, g, b] = shadeHighElevation(
+			cell.biome,
+			cell.elevation,
+			biomeToRgb(cell.biome),
+		);
 		const o = i * 4;
 		pixels[o] = r;
 		pixels[o + 1] = g;

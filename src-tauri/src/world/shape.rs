@@ -106,6 +106,9 @@ pub fn shape_value(
     let cx = w * 0.5;
     let cy = h * 0.5;
     let (ox, oy) = coast_warp(coast_noise, world_x, world_y);
+    let warp = f64::from(config.coast_distortion.clamp(0.0, 1.0));
+    let ox = ox * warp;
+    let oy = oy * warp;
 
     match profile {
         ShapeProfile::Radial => {
