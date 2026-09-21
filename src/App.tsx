@@ -95,6 +95,7 @@ function App() {
 						grid={chunkMap.grid}
 						onBack={() => setSelectedChunk(null)}
 						settlements={settlementMap.settlements}
+						roads={settlementMap.roads}
 					/>
 				) : selectedRegion ? (
 					<RegionMapView
@@ -103,12 +104,14 @@ function App() {
 						onBack={() => setSelectedRegion(null)}
 						onChunkSelect={setSelectedChunk}
 						settlements={settlementMap.settlements}
+						roads={settlementMap.roads}
 					/>
 				) : (
 					<GlobalMapView
 						grid={grid}
 						onRegionSelect={selectRegion}
 						settlements={settlementMap.settlements}
+						roads={settlementMap.roads}
 					/>
 				)}
 			</div>

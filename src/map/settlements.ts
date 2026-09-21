@@ -1,6 +1,9 @@
 import type {
 	District,
 	DistrictKind,
+	Road,
+	RoadKind,
+	RoadSurface,
 	Settlement,
 	SettlementKind,
 	TerrainGrid,
@@ -80,10 +83,22 @@ export const DISTRICT_INFO: Record<DistrictKind, { label: string; fill: string }
 		Port: { label: "Portowa", fill: "#6a8490" },
 		Temple: { label: "Świątynna", fill: "#d4c8ae" },
 		Noble: { label: "Zamożna", fill: "#c4a07a" },
-		Forest: { label: "Leśna", fill: "#5d7a48" },
+		Forest: { label: "Leśna / park", fill: "#5d7a48" },
 		Residential: { label: "Mieszkaniowa", fill: "#cbb89a" },
 		Outskirts: { label: "Obrzeża", fill: "#b59a72" },
 	};
+
+export type RoadDetail = "main" | "region" | "close";
+
+export const ROAD_KIND_ORDER: RoadKind[] = ["Highway", "Secondary", "Local"];
+
+export const ROAD_INFO: Record<RoadKind, { label: string; stroke: string }> = {
+	Highway: { label: "Szlak główny", stroke: "#c4a36a" },
+	Secondary: { label: "Droga boczna", stroke: "#8a6a48" },
+	Local: { label: "Droga poboczna", stroke: "#6a5340" },
+};
+
+const STREET_BED = "#ead9b0";
 
 const DRAW_ORDER: SettlementKind[] = ["Hamlet", "Village", "Town", "City"];
 
@@ -126,11 +141,8 @@ export interface SettlementHit {
 	district: District | null;
 }
 
-function footprintFrame(settlement: Settlement): { stretch: number; rot: number } {
-	return {
-		stretch: 0.92 + unit(settlement.x, settlement.y, 1) * 0.16,
-		rot: (unit(settlement.x, settlement.y, 0) - 0.5) * 0.7,
-	};
+function footprintFrame(): { stretch: number; rot: number } {
+	return { stretch: 1, rot: 0 };
 }
 
 function toLocalNorm(
@@ -138,10 +150,9 @@ function toLocalNorm(
 	py: number,
 	sx: number,
 	sy: number,
-	settlement: Settlement,
 	R: number,
 ): { nx: number; ny: number } {
-	const { stretch, rot } = footprintFrame(settlement);
+	const { stretch, rot } = footprintFrame();
 	const dx = px - sx;
 	const dy = py - sy;
 	const c = Math.cos(-rot);
@@ -173,7 +184,17 @@ function isPlanned(settlement: Settlement): boolean {
 	);
 }
 
-function roadAxes(settlement: Settlement): number[] {
+function roadApproaches(settlement: Settlement): { angle: number; kind: RoadKind }[] {
+	if (settlement.roadApproaches.length > 0) {
+		return settlement.roadApproaches;
+	}
+	return roadAxesFallback(settlement).map((angle) => ({
+		angle,
+		kind: "Secondary" as const,
+	}));
+}
+
+function roadAxesFallback(settlement: Settlement): number[] {
 	const base = unit(settlement.x, settlement.y, 13) * TAU;
 	if (settlement.kind === "Hamlet") return [base];
 	if (settlement.kind === "Village") {
@@ -191,6 +212,18 @@ function roadAxes(settlement: Settlement): number[] {
 		axes.push(base + TAU * (0.63 + unit(settlement.x, settlement.y, 17) * 0.1));
 	}
 	return axes;
+}
+
+function roadAxes(settlement: Settlement): number[] {
+	const hw = roadApproaches(settlement).filter((a) => a.kind === "Highway");
+	if (hw.length > 0) return hw.map((a) => a.angle);
+	return roadApproaches(settlement).map((a) => a.angle);
+}
+
+function lobeWeight(kind: RoadKind): number {
+	if (kind === "Highway") return 1.55;
+	if (kind === "Secondary") return 1.05;
+	return 0.55;
 }
 
 function corePos(settlement: Settlement): { x: number; y: number } {
@@ -218,31 +251,47 @@ function outlineR(settlement: Settlement, angle: number): number {
 	if (planned) {
 		const sq = 0.8 / Math.max(Math.abs(c), Math.abs(s), 0.25);
 		r = r * 0.38 + Math.min(sq, 1.22) * 0.62;
+		const approaches = roadApproaches(settlement);
+		for (let i = 0; i < approaches.length; i++) {
+			const k = Math.cos(a - approaches[i].angle);
+			if (k > 0.2) {
+				r += 0.08 * lobeWeight(approaches[i].kind) * k * k;
+			}
+		}
 	} else {
-		for (let i = 0; i < axes.length; i++) {
-			const k = Math.cos(a - axes[i]);
+		const approaches = roadApproaches(settlement);
+		for (let i = 0; i < approaches.length; i++) {
+			const k = Math.cos(a - approaches[i].angle);
 			if (k > 0.1) {
 				const lobe =
-					0.16 + unit(settlement.x, settlement.y, 21 + i) * 0.14;
+					(0.16 + unit(settlement.x, settlement.y, 21 + i) * 0.14) *
+					lobeWeight(approaches[i].kind);
 				r += lobe * k * k;
 			}
 		}
 	}
 	const aq = ((a / TAU) * 16) | 0;
-	r *= 0.9 + unit(settlement.x, settlement.y, 30 + aq) * 0.22;
-	return Math.max(0.36, Math.min(1.62, r));
+	let jitter = 0.9 + unit(settlement.x, settlement.y, 30 + aq) * 0.22;
+	for (const approach of roadApproaches(settlement)) {
+		const k = Math.cos(a - approach.angle);
+		if (k > 0.72) {
+			const w = (k - 0.72) / 0.28;
+			jitter = jitter * (1 - w) + w;
+		}
+	}
+	r *= jitter;
+	return Math.max(0.36, Math.min(1.72, r));
 }
 
 function planOutline(settlement: Settlement): { x: number; y: number }[] {
 	const n =
 		settlement.kind === "City" ? 22 : settlement.kind === "Town" ? 18 : 14;
 	const rot = roadAxes(settlement)[0];
-	const c = corePos(settlement);
 	const pts: { x: number; y: number }[] = [];
 	for (let i = 0; i < n; i++) {
 		const a = rot + (i / n) * TAU;
 		const r = outlineR(settlement, a);
-		pts.push({ x: c.x + Math.cos(a) * r, y: c.y + Math.sin(a) * r });
+		pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
 	}
 	return pts;
 }
@@ -263,69 +312,189 @@ function districtSite(
 	return { x: c.x + Math.cos(a) * rOut * t, y: c.y + Math.sin(a) * rOut * t };
 }
 
-function bisectorHit(
-	p: { x: number; y: number },
-	q: { x: number; y: number },
-	a: { x: number; y: number },
-	b: { x: number; y: number },
-): { x: number; y: number } {
-	const mx = (a.x + b.x) * 0.5;
-	const my = (a.y + b.y) * 0.5;
-	const nx = b.x - a.x;
-	const ny = b.y - a.y;
-	const dx = q.x - p.x;
-	const dy = q.y - p.y;
-	const den = dx * nx + dy * ny;
-	if (Math.abs(den) < 1e-12) {
-		return { x: (p.x + q.x) * 0.5, y: (p.y + q.y) * 0.5 };
-	}
-	const t = ((mx - p.x) * nx + (my - p.y) * ny) / den;
-	return { x: p.x + t * dx, y: p.y + t * dy };
+type Pt = { x: number; y: number };
+
+interface CityBlock {
+	poly: Pt[];
+	district: District | null;
 }
 
-function clipHalfPlane(
-	poly: { x: number; y: number }[],
-	site: { x: number; y: number },
-	other: { x: number; y: number },
-): { x: number; y: number }[] {
-	if (poly.length < 3) return [];
-	const ddx = site.x - other.x;
-	const ddy = site.y - other.y;
-	if (ddx * ddx + ddy * ddy < 1e-8) return poly;
-	const out: { x: number; y: number }[] = [];
+function polyArea(poly: Pt[]): number {
+	let a = 0;
+	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+		a += poly[j].x * poly[i].y - poly[i].x * poly[j].y;
+	}
+	return a * 0.5;
+}
+
+function centroid(poly: Pt[]): Pt {
+	let x = 0;
+	let y = 0;
+	let a = 0;
+	for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+		const c = poly[j].x * poly[i].y - poly[i].x * poly[j].y;
+		x += (poly[j].x + poly[i].x) * c;
+		y += (poly[j].y + poly[i].y) * c;
+		a += c;
+	}
+	if (Math.abs(a) < 1e-10) return poly[0];
+	return { x: x / (3 * a), y: y / (3 * a) };
+}
+
+function splitPolyByLine(
+	poly: Pt[],
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
+): [Pt[], Pt[]] {
+	const nx = -(by - ay);
+	const ny = bx - ax;
+	const side = (p: Pt) => nx * (p.x - ax) + ny * (p.y - ay);
+	const hit = (p: Pt, q: Pt) => {
+		const s1 = side(p);
+		const s2 = side(q);
+		const t = s1 / (s1 - s2 || 1e-9);
+		return { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
+	};
+	const left: Pt[] = [];
+	const right: Pt[] = [];
 	const n = poly.length;
 	for (let i = 0; i < n; i++) {
 		const cur = poly[i];
 		const prev = poly[(i + n - 1) % n];
-		const curIn =
-			(cur.x - site.x) ** 2 + (cur.y - site.y) ** 2 <=
-			(cur.x - other.x) ** 2 + (cur.y - other.y) ** 2;
-		const prevIn =
-			(prev.x - site.x) ** 2 + (prev.y - site.y) ** 2 <=
-			(prev.x - other.x) ** 2 + (prev.y - other.y) ** 2;
-		if (curIn) {
-			if (!prevIn) out.push(bisectorHit(prev, cur, site, other));
-			out.push(cur);
-		} else if (prevIn) {
-			out.push(bisectorHit(prev, cur, site, other));
+		const cin = side(cur) >= 0;
+		const pin = side(prev) >= 0;
+		if (cin) {
+			if (!pin) left.push(hit(prev, cur));
+			left.push(cur);
+		} else if (pin) {
+			left.push(hit(prev, cur));
+		}
+		if (!cin) {
+			if (pin) right.push(hit(prev, cur));
+			right.push(cur);
+		} else if (!pin) {
+			right.push(hit(prev, cur));
 		}
 	}
-	return out;
+	return [left, right];
 }
 
-function districtPoints(
-	settlement: Settlement,
-	district: District,
-): { x: number; y: number }[] {
-	if (settlement.districts.length === 0) return planOutline(settlement);
-	const site = districtSite(settlement, district);
-	let poly = planOutline(settlement).map((p) => ({ x: p.x, y: p.y }));
-	for (const other of settlement.districts) {
-		if (other.name === district.name && other.a0 === district.a0) continue;
-		poly = clipHalfPlane(poly, site, districtSite(settlement, other));
-		if (poly.length < 3) return [];
+function insetPoly(poly: Pt[], amt: number): Pt[] {
+	const c = centroid(poly);
+	return poly.map((p) => {
+		const dx = p.x - c.x;
+		const dy = p.y - c.y;
+		const d = Math.hypot(dx, dy);
+		if (d < 1e-6) return p;
+		const k = Math.max(0.15, (d - amt) / d);
+		return { x: c.x + dx * k, y: c.y + dy * k };
+	});
+}
+
+function streetSplits(settlement: Settlement): { ax: number; ay: number; bx: number; by: number }[] {
+	const planned = isPlanned(settlement);
+	const approaches = roadApproaches(settlement);
+	const main = approaches[0]?.angle ?? roadAxes(settlement)[0] ?? 0;
+	const lines: { ax: number; ay: number; bx: number; by: number }[] = [];
+	const addLine = (angle: number, ox: number, oy: number) => {
+		const ux = Math.cos(angle);
+		const uy = Math.sin(angle);
+		lines.push({
+			ax: ox - ux * 2.4,
+			ay: oy - uy * 2.4,
+			bx: ox + ux * 2.4,
+			by: oy + uy * 2.4,
+		});
+	};
+	for (const ap of approaches) {
+		addLine(ap.angle, 0, 0);
 	}
-	return poly;
+	if (approaches.length === 0) addLine(main, 0, 0);
+
+	let extraPara = 0;
+	let extraPerp = 1;
+	if (settlement.kind === "City") {
+		extraPara = 2;
+		extraPerp = 2;
+	} else if (settlement.kind === "Town") {
+		extraPara = 1;
+		extraPerp = 2;
+	} else if (settlement.kind === "Village") {
+		extraPara = 1;
+		extraPerp = 1;
+	}
+	const jitter = planned ? 0.04 : 0.16;
+	const addOffsets = (base: number, count: number, salt: number) => {
+		for (let i = 0; i < count; i++) {
+			const sign = i % 2 === 0 ? 1 : -1;
+			const rank = Math.floor(i / 2) + 1;
+			const off =
+				sign * rank * (0.26 + unit(settlement.x, settlement.y, salt + i) * 0.12);
+			const ang =
+				base + (unit(settlement.x, settlement.y, salt + 20 + i) - 0.5) * jitter;
+			const px = -Math.sin(base);
+			const py = Math.cos(base);
+			addLine(ang, px * off, py * off);
+		}
+	};
+	addOffsets(main, extraPara, 80);
+	addOffsets(main + Math.PI / 2, extraPerp, 120);
+	return lines;
+}
+
+function settlementBlocks(settlement: Settlement): CityBlock[] {
+	const splits = streetSplits(settlement);
+	let polys: Pt[][] = [planOutline(settlement)];
+	for (const line of splits) {
+		const next: Pt[][] = [];
+		for (const poly of polys) {
+			if (poly.length < 3) continue;
+			const [a, b] = splitPolyByLine(poly, line.ax, line.ay, line.bx, line.by);
+			if (a.length >= 3 && Math.abs(polyArea(a)) > 0.01) next.push(a);
+			if (b.length >= 3 && Math.abs(polyArea(b)) > 0.01) next.push(b);
+		}
+		if (next.length > 0) polys = next;
+	}
+	const insetAmt =
+		settlement.kind === "City"
+			? 0.042
+			: settlement.kind === "Town"
+				? 0.048
+				: 0.055;
+	const centerDistrict =
+		settlement.districts.find((d) => d.kind === "Center") ?? null;
+	const blocks: CityBlock[] = [];
+	let centerIdx = -1;
+	let centerBest = Infinity;
+	for (const poly of polys) {
+		if (Math.abs(polyArea(poly)) < 0.014) continue;
+		const c = centroid(poly);
+		const inset = insetPoly(poly, insetAmt);
+		if (inset.length < 3 || Math.abs(polyArea(inset)) < 0.006) continue;
+		let district: District | null = null;
+		let best = Infinity;
+		for (const d of settlement.districts) {
+			if (d.kind === "Center") continue;
+			const site = districtSite(settlement, d);
+			const dist = (site.x - c.x) ** 2 + (site.y - c.y) ** 2;
+			if (dist < best) {
+				best = dist;
+				district = d;
+			}
+		}
+		const d0 = c.x * c.x + c.y * c.y;
+		if (centerDistrict && d0 < centerBest) {
+			centerBest = d0;
+			centerIdx = blocks.length;
+		}
+		blocks.push({ poly: inset, district });
+	}
+	if (centerIdx >= 0 && centerDistrict && centerBest < 0.14) {
+		blocks[centerIdx].district = centerDistrict;
+	}
+	return blocks;
 }
 
 function pointInPoly(
@@ -346,10 +515,10 @@ function pointInPoly(
 }
 
 function districtAt(settlement: Settlement, nx: number, ny: number): District | null {
-	for (let i = settlement.districts.length - 1; i >= 0; i--) {
-		const d = settlement.districts[i];
-		const poly = districtPoints(settlement, d);
-		if (poly.length >= 3 && pointInPoly(nx, ny, poly)) return d;
+	for (const block of settlementBlocks(settlement)) {
+		if (pointInPoly(nx, ny, block.poly)) {
+			return block.district;
+		}
 	}
 	return settlement.districts[0] ?? null;
 }
@@ -393,7 +562,7 @@ export function hitSettlement(
 			continue;
 		}
 		const r = settlementFootprintRadius(settlement, pxPerWorld);
-		const { nx, ny } = toLocalNorm(px, py, sx, sy, settlement, r);
+		const { nx, ny } = toLocalNorm(px, py, sx, sy, r);
 		const outline = planOutline(settlement);
 		if (!pointInPoly(nx, ny, outline)) continue;
 		const dx = nx - settlement.coreDx;
@@ -532,7 +701,7 @@ function drawFootprint(
 ) {
 	const info = SETTLEMENT_INFO[settlement.kind];
 	const R = settlementFootprintRadius(settlement, pxPerWorld);
-	const { stretch, rot } = footprintFrame(settlement);
+	const { stretch, rot } = footprintFrame();
 	const verts = pullOntoLand(
 		footprintLocalVerts(settlement, R),
 		sx,
@@ -555,18 +724,15 @@ function drawFootprint(
 	traceVerts(octx, verts);
 	octx.save();
 	octx.clip();
-	if (settlement.districts.length > 0) {
-		octx.fillStyle = DISTRICT_INFO.Residential.fill;
-		octx.fill();
-		for (const district of settlement.districts) {
-			const pts = districtPoints(settlement, district);
-			if (pts.length < 3) continue;
-			tracePoly(octx, pts, R);
-			octx.fillStyle = DISTRICT_INFO[district.kind].fill;
-			octx.fill();
-		}
-	} else {
-		octx.fillStyle = info.fill;
+	octx.fillStyle = STREET_BED;
+	octx.fill();
+	const blocks = settlementBlocks(settlement);
+	for (const block of blocks) {
+		if (block.poly.length < 3) continue;
+		tracePoly(octx, block.poly, R);
+		octx.fillStyle = block.district
+			? DISTRICT_INFO[block.district.kind].fill
+			: info.fill;
 		octx.fill();
 	}
 	octx.restore();
@@ -588,13 +754,19 @@ function drawFootprint(
 		traceVerts(ctx, verts);
 		ctx.clip();
 		if (hoveredDistrict) {
-			tracePoly(ctx, districtPoints(settlement, hoveredDistrict), R);
+			for (const block of settlementBlocks(settlement)) {
+				if (block.district?.name !== hoveredDistrict.name) continue;
+				tracePoly(ctx, block.poly, R);
+				ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+				ctx.lineWidth = 1.4;
+				ctx.stroke();
+			}
 		} else {
 			traceVerts(ctx, verts);
+			ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+			ctx.lineWidth = 1.4;
+			ctx.stroke();
 		}
-		ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-		ctx.lineWidth = 1.4;
-		ctx.stroke();
 		ctx.restore();
 	}
 	ctx.restore();
@@ -623,6 +795,121 @@ function drawCityMarker(
 		ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
 		ctx.lineWidth = 2;
 		ctx.strokeRect(-half - 2, -half - 2, half * 2 + 4, half * 2 + 4);
+	}
+	ctx.restore();
+}
+
+function roadInView(
+	points: { x: number; y: number }[],
+	bounds: WorldBounds,
+): boolean {
+	if (points.length === 0) return false;
+	let minX = points[0].x;
+	let maxX = points[0].x;
+	let minY = points[0].y;
+	let maxY = points[0].y;
+	for (let i = 1; i < points.length; i++) {
+		const p = points[i];
+		if (p.x < minX) minX = p.x;
+		if (p.x > maxX) maxX = p.x;
+		if (p.y < minY) minY = p.y;
+		if (p.y > maxY) maxY = p.y;
+	}
+	const pad = bounds.span * 0.08;
+	return !(
+		maxX < bounds.x0 - pad ||
+		minX > bounds.x0 + bounds.span + pad ||
+		maxY < bounds.y0 - pad ||
+		minY > bounds.y0 + bounds.span + pad
+	);
+}
+
+function strokeRoadPath(
+	ctx: CanvasRenderingContext2D,
+	points: { x: number; y: number }[],
+	bounds: WorldBounds,
+	canvasWidth: number,
+	canvasHeight: number,
+) {
+	ctx.beginPath();
+	for (let i = 0; i < points.length; i++) {
+		const sx = ((points[i].x - bounds.x0) / bounds.span) * canvasWidth;
+		const sy = ((points[i].y - bounds.y0) / bounds.span) * canvasHeight;
+		if (i === 0) ctx.moveTo(sx, sy);
+		else ctx.lineTo(sx, sy);
+	}
+	ctx.stroke();
+}
+
+function roadLayerWidth(
+	kind: RoadKind,
+	surface: RoadSurface,
+	detail: RoadDetail,
+): number {
+	const base =
+		kind === "Highway" ? 1 : kind === "Secondary" ? 0.62 : 0.38;
+	const scale =
+		detail === "main" ? 2.3 : detail === "region" ? 2.5 : 4.2;
+	const surfaceMul =
+		surface === "Paved" ? 1 : surface === "Packed" ? 0.88 : 0.72;
+	return Math.max(0.7, scale * base * surfaceMul);
+}
+
+function paintRoadStroke(
+	ctx: CanvasRenderingContext2D,
+	road: Road,
+	bounds: WorldBounds,
+	canvasWidth: number,
+	canvasHeight: number,
+	detail: RoadDetail,
+) {
+	const width = roadLayerWidth(road.kind, road.surface, detail);
+	ctx.setLineDash([]);
+	if (road.surface === "Paved") {
+		ctx.strokeStyle = "rgba(42, 28, 14, 0.72)";
+		ctx.lineWidth = width + (detail === "close" ? 1.6 : 0.9);
+		strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
+		ctx.strokeStyle =
+			detail === "close" ? "rgba(214, 176, 110, 0.95)" : "rgba(196, 163, 106, 0.88)";
+		ctx.lineWidth = width;
+		strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
+		return;
+	}
+	if (road.surface === "Packed") {
+		ctx.strokeStyle =
+			detail === "close" ? "rgba(122, 90, 54, 0.88)" : "rgba(110, 82, 50, 0.78)";
+		ctx.lineWidth = width;
+		strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
+		return;
+	}
+	const dash = detail === "close" ? [5, 4] : [3.5, 3];
+	ctx.setLineDash(dash);
+	ctx.strokeStyle =
+		detail === "close" ? "rgba(86, 68, 46, 0.8)" : "rgba(86, 68, 46, 0.62)";
+	ctx.lineWidth = width;
+	strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
+	ctx.setLineDash([]);
+}
+
+export function drawRoads(
+	ctx: CanvasRenderingContext2D,
+	canvasWidth: number,
+	canvasHeight: number,
+	roads: Road[],
+	bounds: WorldBounds,
+	detail: RoadDetail,
+) {
+	ctx.save();
+	ctx.lineCap = "round";
+	ctx.lineJoin = "round";
+	const order: RoadKind[] = ["Local", "Secondary", "Highway"];
+	for (const kind of order) {
+		for (const road of roads) {
+			if (road.kind !== kind) continue;
+			if (detail === "main" && road.kind !== "Highway") continue;
+			if (road.points.length < 2 || !roadInView(road.points, bounds)) continue;
+			paintRoadStroke(ctx, road, bounds, canvasWidth, canvasHeight, detail);
+		}
 	}
 	ctx.restore();
 }

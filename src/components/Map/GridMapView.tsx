@@ -1,5 +1,5 @@
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import type { GridCell, Settlement, TerrainGrid, WorldBounds } from "../../api/world";
+import type { GridCell, Road, Settlement, TerrainGrid, WorldBounds } from "../../api/world";
 import { canvasClientToPixel, pixelToCell } from "../../api/world";
 import {
 	drawCellHighlight,
@@ -7,9 +7,11 @@ import {
 	terrainGridToImageData,
 } from "../../map/render";
 import {
+	drawRoads,
 	drawSettlements,
 	formatSettlementLabel,
 	hitSettlement,
+	type RoadDetail,
 	type SettlementDrawStyle,
 	type SettlementHit,
 } from "../../map/settlements";
@@ -24,6 +26,8 @@ interface GridMapViewProps {
 	showGrid?: boolean;
 	trackCells?: boolean;
 	settlements?: Settlement[];
+	roads?: Road[];
+	roadDetail?: RoadDetail;
 	worldBounds?: WorldBounds;
 	settlementStyle?: SettlementDrawStyle;
 }
@@ -38,6 +42,8 @@ export function GridMapView({
 	showGrid = true,
 	trackCells = true,
 	settlements = [],
+	roads = [],
+	roadDetail = "region",
 	worldBounds,
 	settlementStyle = "plan",
 }: GridMapViewProps) {
@@ -64,20 +70,32 @@ export function GridMapView({
 			if (hover && trackCells) {
 				drawCellHighlight(ctx, hover.cx, hover.cy, cellSize);
 			}
-			if (worldBounds && settlements.length > 0) {
-				drawSettlements(
-					ctx,
-					canvas.width,
-					canvas.height,
-					settlements,
-					worldBounds,
-					settlementHover,
-					settlementStyle,
-					grid,
-				);
+			if (worldBounds) {
+				if (roads.length > 0) {
+					drawRoads(
+						ctx,
+						canvas.width,
+						canvas.height,
+						roads,
+						worldBounds,
+						roadDetail,
+					);
+				}
+				if (settlements.length > 0) {
+					drawSettlements(
+						ctx,
+						canvas.width,
+						canvas.height,
+						settlements,
+						worldBounds,
+						settlementHover,
+						settlementStyle,
+						grid,
+					);
+				}
 			}
 		},
-		[cellSize, grid, settlements, settlementStyle, showGrid, trackCells, worldBounds],
+		[cellSize, grid, roadDetail, roads, settlements, settlementStyle, showGrid, trackCells, worldBounds],
 	);
 
 	useEffect(() => {

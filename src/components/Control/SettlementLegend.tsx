@@ -2,6 +2,8 @@ import type { Settlement } from "../../api/world";
 import {
 	DISTRICT_INFO,
 	DISTRICT_KIND_ORDER,
+	ROAD_INFO,
+	ROAD_KIND_ORDER,
 	SETTLEMENT_INFO,
 	SETTLEMENT_KIND_ORDER,
 } from "../../map/settlements";
@@ -41,6 +43,21 @@ export function SettlementLegend({ settlements }: SettlementLegendProps) {
 								{info.label} · {formatRange(info.popMin, info.popMax)} ·{" "}
 								{counts[kind]}
 							</span>
+						</li>
+					);
+				})}
+			</ul>
+			<h2>Drogi</h2>
+			<ul>
+				{ROAD_KIND_ORDER.map((kind) => {
+					const info = ROAD_INFO[kind];
+					return (
+						<li key={kind}>
+							<span
+								className="biome-swatch road-swatch"
+								style={{ backgroundColor: info.stroke }}
+							/>
+							<span>{info.label}</span>
 						</li>
 					);
 				})}

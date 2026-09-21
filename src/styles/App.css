@@ -134,6 +134,12 @@
   border-radius: 2px;
 }
 
+.road-swatch {
+  height: 3px;
+  align-self: center;
+  border-radius: 1px;
+}
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }

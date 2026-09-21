@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use tauri::State;
 use world::config::{TerrainGenParams, WorldConfig};
 use world::grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
-use world::settlement::{generate as generate_settlement_list, Settlement};
+use world::settlement::{generate as generate_settlement_map, SettlementMap};
 use world::types::{ChunkId, RegionId, TerrainGrid};
 
 struct WorldState {
@@ -71,8 +71,8 @@ fn generate_chunk(
 }
 
 #[tauri::command]
-fn generate_settlements(seed: u64, params: TerrainGenParams) -> Vec<Settlement> {
-    generate_settlement_list(config_with(seed, params))
+fn generate_settlements(seed: u64, params: TerrainGenParams) -> SettlementMap {
+    generate_settlement_map(config_with(seed, params))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

@@ -2,6 +2,7 @@ import {
 	CHUNKS_PER_REGION,
 	globalWorldBounds,
 	type RegionId,
+	type Road,
 	type Settlement,
 	type TerrainGrid,
 } from "../../api/world";
@@ -11,12 +12,14 @@ interface GlobalMapViewProps {
 	grid: TerrainGrid | null;
 	onRegionSelect: (region: RegionId) => void;
 	settlements: Settlement[];
+	roads: Road[];
 }
 
 export function GlobalMapView({
 	grid,
 	onRegionSelect,
 	settlements,
+	roads,
 }: GlobalMapViewProps) {
 	const cellSize = grid ? grid.width / CHUNKS_PER_REGION : 64;
 	const overview = settlements.filter(
@@ -34,6 +37,8 @@ export function GlobalMapView({
 			}
 			onCellSelect={(cell) => onRegionSelect({ rx: cell.cx, ry: cell.cy })}
 			settlements={overview}
+			roads={roads}
+			roadDetail="main"
 			worldBounds={globalWorldBounds()}
 			settlementStyle="marker"
 		/>

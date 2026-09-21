@@ -2,7 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
 	ChunkId,
 	RegionId,
-	Settlement,
+	SettlementMap,
 	TerrainGrid,
 	WorldBounds,
 } from "../types/world";
@@ -19,8 +19,12 @@ export type {
 	District,
 	DistrictKind,
 	RegionId,
+	Road,
+	RoadKind,
+	RoadSurface,
 	Settlement,
 	SettlementKind,
+	SettlementMap,
 	TerrainCell,
 	TerrainGrid,
 	TileType,
@@ -81,7 +85,7 @@ export function generateChunk(
 
 export function generateSettlements(seed: number, params: TerrainParams) {
 	assertTauri();
-	return invoke<Settlement[]>("generate_settlements", { seed, params });
+	return invoke<SettlementMap>("generate_settlements", { seed, params });
 }
 
 export function globalWorldBounds(): WorldBounds {

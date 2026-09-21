@@ -69,6 +69,40 @@ export interface Settlement {
 	coreDx: number;
 	coreDy: number;
 	districts: District[];
+	roadApproaches: RoadApproach[];
+	streets: Street[];
+}
+
+export type RoadKind = "Highway" | "Secondary" | "Local";
+
+export type RoadSurface = "Paved" | "Packed" | "Dirt";
+
+export interface RoadApproach {
+	angle: number;
+	kind: RoadKind;
+}
+
+export interface Street {
+	angle: number;
+	kind: RoadKind;
+	radial: boolean;
+	radius: number;
+}
+
+export interface RoadPoint {
+	x: number;
+	y: number;
+}
+
+export interface Road {
+	kind: RoadKind;
+	surface: RoadSurface;
+	points: RoadPoint[];
+}
+
+export interface SettlementMap {
+	settlements: Settlement[];
+	roads: Road[];
 }
 
 export interface WorldBounds {
