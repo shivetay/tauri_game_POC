@@ -1,27 +1,35 @@
 ---
-description: Konwencje React frontend (rendering, UI)
+description: React frontend conventions (rendering, UI)
 globs: src/**/*.{ts,tsx}
 alwaysApply: false
 ---
 
 # React frontend
 
-## Zasady
+## Rules
 
-- Frontend NIE generuje terenu — tylko renderuje dane z Rust
-- Wywołania Tauri: zawsze przez wrappery w `src/api/world.ts`
-- Custom hooks w `src/hooks/` — jeden hook per feature
-- Komponenty map w `src/components/Map/`
+- The frontend does NOT generate terrain — it only renders data from Rust
+- Tauri calls: always through wrappers in `src/api/world.ts`
+- Custom hooks in `src/hooks/` — one hook per feature (`useWorldMap`, `useRegionMap`, `useChunkMap`)
+- Map components in `src/components/Map/`
+- Generator seed state is `number`; the input may keep `draftSeed` as a string
 
 ## Canvas rendering
 
-- `TerrainGrid` → `ImageData` przez `src/map/render.ts`
-- Kolory biomów w `src/map/colors.ts` — synchronizuj z `TileType` z Rust
-- Stałe (REGION_SIZE, MACRO_RESOLUTION) w `src/utils/constants.ts`
+- `TerrainGrid` → `ImageData` via `src/map/render.ts`
+- Biome colors in `src/map/colors.ts` — keep in sync with Rust `TileType`
+- Constants (REGION_SIZE, CHUNK_SIZE, resolutions) in `src/utils/constants.ts`
+- Generator params: `src/types/terrainParams.ts` (camelCase, mirrored from Rust)
 
-## Konwencje
+## LOD
+
+- Global: `GlobalMapView` + `generate_global`
+- Region: `RegionMapView` + `generate_region`
+- Chunk: `ChunkMapView` + `generate_chunk`
+
+## Conventions
 
 - Functional components only
 - TypeScript strict mode
-- Typy domenowe w `src/types/world.d.ts`
-- Nie używaj `any` — definiuj typy albo użyj `unknown`
+- Domain types in `src/types/world.d.ts`
+- Do not use `any` — define a type or use `unknown`

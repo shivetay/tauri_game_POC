@@ -1,33 +1,44 @@
 ---
-description: Ogólne standardy kodowania i powtarzalność wyników AI
+description: Coding standards and repeatable AI results
 alwaysApply: true
 ---
 
-# Standardy kodowania
+# Coding standards
 
-## Powtarzalność wyników
+## Repeatable results
 
-- Przed implementacją: wypisz plan kroków i kryteria sukcesu
-- Zmiany chirurgiczne — edytuj tylko to, czego dotyczy zadanie
-- Nie "ulepszaj" sąsiedniego kodu, komentarzy ani formatowania
-- Dopasuj się do istniejącego stylu, nawet jeśli zrobiłbyś inaczej
-- Jeśli zadanie jest niejednoznaczne — zapytaj zanim zaczniesz kodować
+- Before implementing: write the step plan, file list, and success criteria — show them to the user before saving code
+- Surgical changes — edit only what the task requires
+- Do not "improve" neighboring code, comments, or formatting
+- Match the existing style even if you would do it differently
+- If the task is ambiguous — ask before coding
+- Do not add npm/cargo dependencies; use the existing stack
 
-## Prostota
+## Simplicity
 
-- Minimum kodu rozwiązującego problem, nic spekulatywnego
-- Żadnych abstrakcji dla jednorazowego użycia
-- Żadnych ficzerów, o które nikt nie prosił
-- Jeśli 200 linii da się napisać w 50 — przepisz
+- Minimum code that solves the problem, nothing speculative
+- No abstractions for one-off use
+- No features nobody asked for
+- If 200 lines can be 50 — rewrite
 
-## Determinizm w domenie
+## No leftover mess
 
-- Każda zmiana w generacji terenu MUSI zachować determinizm seed → world
-- Testuj z seedem `eons-world-1` (Radial) jako baseline
-- Po zmianie shape/biome/noise sprawdź że istniejące seedy dają ten sam profil
+The agent cleans **its own** diff before calling the task done:
 
-## Język
+- Remove unused imports, variables, parameters, types, functions, and files that you added or that your change made dead
+- Do not leave commented-out code, debug `console.log` / `println!`, throwaway `TODO`, or `#[allow(dead_code)]` as a sweep-under
+- Do not export "just in case". Do not create helpers, types, or constants unused in the same diff
+- After edits, lint touched files and fix warnings you introduced
+- Do not touch pre-existing dead code that your change did not cause — unless the user asks
 
-- Komentarze w kodzie: angielski
-- Dokumentacja projektu (README, docs/): polski
-- Cursor rules: polski
+## Domain determinism
+
+- Every terrain-generation change MUST keep seed → world determinism
+- Test with seed `6` (Ellipse) as the baseline
+- After a shape/biome/noise change, check that `seed % 6` still maps to the same profile
+
+## Language
+
+- Code comments: English
+- Agent files (`AGENTS.md`, `.cursor/rules`, `.cursor/skills`): English
+- Project docs (README, `docs/`): Polish

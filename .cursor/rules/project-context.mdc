@@ -1,11 +1,11 @@
 ---
-description: Kontekst projektu map_tests — tech stack, architektura, konwencje
+description: map_tests project context — tech stack, architecture, conventions
 alwaysApply: true
 ---
 
-# Projekt: map_tests
+# Project: map_tests
 
-Podgląd proceduralnej mapy świata. Desktop app.
+Procedural world-map preview. Desktop app.
 
 ## Tech stack
 
@@ -13,37 +13,39 @@ Podgląd proceduralnej mapy świata. Desktop app.
 - **Frontend**: React 19, TypeScript 5.8, Vite 7
 - **Backend**: Rust (terrain generation)
 - **Package manager**: pnpm
-- **Noise**: `noise` (Rust), `simplex-noise` (JS — legacy)
+- **Noise**: `noise` (Rust); `simplex-noise` (JS — legacy, do not use for new generation)
 - **Parallelism**: `rayon` (Rust)
 
-## Architektura
+## Architecture
 
-- Rust jest jedynym źródłem prawdy o terenie — frontend tylko renderuje
-- Frontend wywołuje Tauri commands via `invoke()` z `src/api/world.ts`
+- Rust is the only source of truth for terrain — the frontend only renders
+- Frontend calls Tauri commands via `invoke()` from `src/api/world.ts`
 - Canvas rendering: `TerrainGrid` → `ImageData` → `<canvas>`
-- Dwa poziomy LOD: macro (global map) i micro (region map)
+- Three LOD levels: global → region → chunk
+- Seed: `u64` / `number`. Params: `TerrainParams` ↔ `TerrainGenParams`
 
-## Struktura katalogów
+## Directory layout
 
 ```
-src/                  # React frontend
-  api/world.ts        # Tauri invoke wrappers + typy
-  hooks/              # useWorldMap, useRegionMap
-  components/Map/     # GlobalMapView, RegionMapView
-  components/Control/ # SeedControl
-  map/                # render.ts, colors.ts
-  types/              # world.d.ts
-  utils/              # constants.ts
-src-tauri/            # Rust backend
-  src/world/          # sampler, grid, noise, biome, shape, config, prng, types
-  src/lib.rs          # Tauri commands
-docs/                 # Notatki architektoniczne
+src/                    # React frontend
+  api/world.ts          # Tauri invoke wrappers + types
+  hooks/                # useWorldMap, useRegionMap, useChunkMap
+  components/Map/       # GlobalMapView, RegionMapView, ChunkMapView
+  components/Control/   # SeedControl, BiomeLegend
+  map/                  # render.ts, colors.ts
+  types/                # world.d.ts, terrainParams.ts
+  utils/                # constants.ts
+src-tauri/              # Rust backend
+  src/world/            # sampler, grid, noise, biome, shape, elevation, ridge, config, prng, types
+  src/lib.rs            # Tauri commands
+docs/                   # Architecture notes
+AGENTS.md               # Agent contract
 ```
 
-## Kluczowe zasady domeny
+## Domain rules
 
-- **Determinizm**: ten sam seed → ten sam świat (zawsze)
-- **6 profili kształtu**: Radial, Ellipse, SquareBump, Irregular, Archipelago, Continents
-- Profil wynika z `seed % 6`
-- Wilgotność ma osobny seed: `seed:moisture`
-- App działa TYLKO jako Tauri desktop — nie jako plain web app
+- **Determinism**: same seed + same params → same world
+- **6 shape profiles**: Radial, Ellipse, SquareBump, Irregular, Archipelago, Continents
+- Profile comes from `seed % 6` (app default seed: `6` → Ellipse)
+- Derived streams (moisture, etc.) from `prng`, not a separate global RNG
+- The app runs ONLY as a Tauri desktop app — not as a plain web app

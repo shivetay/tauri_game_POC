@@ -1,36 +1,40 @@
 ---
-description: Konwencje Rust backend (terrain generation)
+description: Rust backend conventions (terrain generation)
 globs: src-tauri/**/*.rs
 alwaysApply: false
 ---
 
 # Rust — terrain generation
 
-## Zasady
+## Rules
 
-- Cały terrain jest generowany w Rust — nigdy nie przenoś logiki generacji do JS
-- Zachowuj determinizm: ta sama kombinacja (seed, x, y) musi dawać identyczny wynik
-- Nowe Tauri commands dodawaj w `lib.rs`, rejestruj w `invoke_handler`
-- Typy danych zwracane do frontendu muszą implementować `serde::Serialize`
+- All terrain is generated in Rust — never move generation logic to JS
+- Keep determinism: the same (seed, params, x, y) must produce the same result
+- Seed is `u64`; profile: `seed % 6`
+- Add new Tauri commands in `lib.rs` and register them in `invoke_handler`
+- Types returned to the frontend must implement `serde::Serialize`
+- Params from the UI: `TerrainGenParams` (`camelCase`) → `apply_to(&mut WorldConfig)`
 
-## Konwencje kodu
+## Code conventions
 
-- Używaj `rayon` do równoległego generowania siatek
-- Noise helpers w `world/noise.rs`, nie duplikuj
-- Nowe biomy dodawaj w `world/biome.rs`, kolory w `src/map/colors.ts`
-- Nowe shape profile w `world/shape.rs` + aktualizuj `hash % N`
+- Use `rayon` for parallel grid generation
+- Noise helpers live in `world/noise.rs` — do not duplicate them
+- Add new biomes in `world/biome.rs`, colors in `src/map/colors.ts`
+- Add new shape profiles in `world/shape.rs` and update `from_index` (`% N`)
 
-## Struktura modułu world
+## world module layout
 
 ```
 world/
-  config.rs   — WorldConfig, LOD, parametry shape
-  types.rs    — TileType, TerrainCell, TerrainGrid, RegionId
-  prng.rs     — deterministyczny hash seeda
-  noise.rs    — fBm, clamp, lerp, redistribution
-  shape.rs    — profile kształtu lądu
-  biome.rs    — klasyfikacja biomów
-  sampler.rs  — główny sampler terenu
-  grid.rs     — generacja globalnej / regionalnej siatki
-  delta.rs    — stub na przyszłe zmiany terenu
+  config.rs     — WorldConfig, LOD, ShapeProfile, TerrainGenParams
+  types.rs      — TileType, TerrainCell, TerrainGrid, RegionId, ChunkId
+  prng.rs       — hash / derive from u64 seed
+  noise.rs      — fBm, clamp, lerp, redistribution
+  shape.rs      — 6 land-shape profiles
+  elevation.rs  — relief belts / orogeny
+  ridge.rs      — ridges
+  biome.rs      — biome classification
+  sampler.rs    — main terrain sampler
+  grid.rs       — generate_global / region / chunk
+  delta.rs      — stub for future terrain edits
 ```
