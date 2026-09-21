@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use tauri::State;
 use world::config::{TerrainGenParams, WorldConfig};
 use world::grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
+use world::settlement::{generate as generate_settlement_list, Settlement};
 use world::types::{ChunkId, RegionId, TerrainGrid};
 
 struct WorldState {
@@ -69,12 +70,22 @@ fn generate_chunk(
     )
 }
 
+#[tauri::command]
+fn generate_settlements(seed: u64, params: TerrainGenParams) -> Vec<Settlement> {
+    generate_settlement_list(config_with(seed, params))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(WorldState::default()))
-        .invoke_handler(tauri::generate_handler![generate_global, generate_region, generate_chunk])
+        .invoke_handler(tauri::generate_handler![
+            generate_global,
+            generate_region,
+            generate_chunk,
+            generate_settlements
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

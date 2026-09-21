@@ -7,6 +7,7 @@ pub mod noise;
 pub mod prng;
 pub mod ridge;
 pub mod sampler;
+pub mod settlement;
 pub mod shape;
 pub mod types;
 

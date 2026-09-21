@@ -6,12 +6,14 @@ import {
 } from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
 import { BiomeLegend } from "./components/Control/BiomeLegend";
+import { SettlementLegend } from "./components/Control/SettlementLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
 import { MapLoadingOverlay } from "./components/Map/MapLoadingOverlay";
 import { RegionMapView } from "./components/Map/RegionMapView";
 import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
+import { useSettlements } from "./hooks/useSettlements";
 import { useWorldMap } from "./hooks/useWorldMap";
 import "./styles/MapScreen.css";
 import "./styles/App.css";
@@ -35,6 +37,7 @@ function App() {
 		selectedRegion,
 		selectedChunk,
 	);
+	const settlementMap = useSettlements(seed, terrainParams);
 
 	function applySeedValue(nextSeed: number) {
 		setDraftSeed(String(nextSeed));
@@ -66,13 +69,14 @@ function App() {
 		setSelectedChunk(null);
 	}
 
-	const isLoading = loading || regionMap.loading || chunkMap.loading;
+	const isLoading =
+		loading || regionMap.loading || chunkMap.loading || settlementMap.loading;
 	const mapLoading =
 		selectedRegion && selectedChunk
 			? chunkMap.loading
 			: selectedRegion
-				? regionMap.loading
-				: loading;
+				? regionMap.loading || settlementMap.loading
+				: loading || settlementMap.loading;
 	const mapLoadingLabel =
 		selectedRegion && selectedChunk
 			? "Generowanie obszaru…"
@@ -90,6 +94,7 @@ function App() {
 						chunk={selectedChunk}
 						grid={chunkMap.grid}
 						onBack={() => setSelectedChunk(null)}
+						settlements={settlementMap.settlements}
 					/>
 				) : selectedRegion ? (
 					<RegionMapView
@@ -97,9 +102,14 @@ function App() {
 						grid={regionMap.grid}
 						onBack={() => setSelectedRegion(null)}
 						onChunkSelect={setSelectedChunk}
+						settlements={settlementMap.settlements}
 					/>
 				) : (
-					<GlobalMapView grid={grid} onRegionSelect={selectRegion} />
+					<GlobalMapView
+						grid={grid}
+						onRegionSelect={selectRegion}
+						settlements={settlementMap.settlements}
+					/>
 				)}
 			</div>
 
@@ -117,7 +127,11 @@ function App() {
 				{error && <p className="map-error">{error}</p>}
 				{regionMap.error && <p className="map-error">{regionMap.error}</p>}
 				{chunkMap.error && <p className="map-error">{chunkMap.error}</p>}
+				{settlementMap.error && (
+					<p className="map-error">{settlementMap.error}</p>
+				)}
 				{isLoading && <p className="map-loading">Generowanie mapy…</p>}
+				<SettlementLegend settlements={settlementMap.settlements} />
 				<BiomeLegend />
 			</aside>
 		</main>

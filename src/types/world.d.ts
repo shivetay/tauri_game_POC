@@ -36,3 +36,19 @@ export interface RegionId {
 	rx: number;
 	ry: number;
 }
+
+export type SettlementKind = "Hamlet" | "Village" | "Town" | "City";
+
+export interface Settlement {
+	x: number;
+	y: number;
+	kind: SettlementKind;
+	population: number;
+	radius: number;
+}
+
+export interface WorldBounds {
+	x0: number;
+	y0: number;
+	span: number;
+}

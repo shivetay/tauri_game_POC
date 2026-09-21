@@ -126,6 +126,10 @@
   border-radius: 2px;
 }
 
+.settlement-swatch {
+  border-radius: 2px;
+}
+
 .logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }
