@@ -11,6 +11,7 @@ import {
 	formatSettlementLabel,
 	hitSettlement,
 	type SettlementDrawStyle,
+	type SettlementHit,
 } from "../../map/settlements";
 
 interface GridMapViewProps {
@@ -43,14 +44,12 @@ export function GridMapView({
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
 	const hoverRef = useRef<GridCell | null>(null);
-	const settlementHoverRef = useRef<Settlement | null>(null);
+	const settlementHoverRef = useRef<SettlementHit | null>(null);
 	const [hoveredCell, setHoveredCell] = useState<GridCell | null>(null);
-	const [hoveredSettlement, setHoveredSettlement] = useState<Settlement | null>(
-		null,
-	);
+	const [hoveredHit, setHoveredHit] = useState<SettlementHit | null>(null);
 
 	const paint = useCallback(
-		(hover: GridCell | null, settlementHover: Settlement | null) => {
+		(hover: GridCell | null, settlementHover: SettlementHit | null) => {
 			const canvas = canvasRef.current;
 			const base = baseCanvasRef.current;
 			if (!canvas || !base) return;
@@ -74,10 +73,11 @@ export function GridMapView({
 					worldBounds,
 					settlementHover,
 					settlementStyle,
+					grid,
 				);
 			}
 		},
-		[cellSize, settlements, settlementStyle, showGrid, trackCells, worldBounds],
+		[cellSize, grid, settlements, settlementStyle, showGrid, trackCells, worldBounds],
 	);
 
 	useEffect(() => {
@@ -98,21 +98,21 @@ export function GridMapView({
 		hoverRef.current = null;
 		settlementHoverRef.current = null;
 		setHoveredCell(null);
-		setHoveredSettlement(null);
+		setHoveredHit(null);
 		paint(null, null);
 	}, [grid, paint]);
 
 	function pointerInfo(e: MouseEvent<HTMLCanvasElement>): {
 		cell: GridCell | null;
-		settlement: Settlement | null;
+		hit: SettlementHit | null;
 	} {
 		const canvas = canvasRef.current;
-		if (!canvas) return { cell: null, settlement: null };
+		if (!canvas) return { cell: null, hit: null };
 
 		const pixel = canvasClientToPixel(e.clientX, e.clientY, canvas);
-		if (!pixel) return { cell: null, settlement: null };
+		if (!pixel) return { cell: null, hit: null };
 
-		const settlement =
+		const hit =
 			worldBounds && settlements.length > 0
 				? hitSettlement(
 						pixel.px,
@@ -134,7 +134,7 @@ export function GridMapView({
 				)
 			: null;
 
-		return { cell, settlement };
+		return { cell, hit };
 	}
 
 	function clearHover() {
@@ -143,34 +143,35 @@ export function GridMapView({
 		hoverRef.current = null;
 		settlementHoverRef.current = null;
 		setHoveredCell(null);
-		setHoveredSettlement(null);
+		setHoveredHit(null);
 		paint(null, null);
 	}
 
 	function handleMouseMove(e: MouseEvent<HTMLCanvasElement>) {
-		const { cell, settlement } = pointerInfo(e);
-		if (!cell && !settlement) {
+		const { cell, hit } = pointerInfo(e);
+		if (!cell && !hit) {
 			clearHover();
 			return;
 		}
 
 		const prevCell = hoverRef.current;
-		const prevSettlement = settlementHoverRef.current;
+		const prevHit = settlementHoverRef.current;
 		const sameCell =
 			(prevCell?.cx === cell?.cx && prevCell?.cy === cell?.cy) ||
 			(!prevCell && !cell);
-		const sameSettlement =
-			prevSettlement?.x === settlement?.x &&
-			prevSettlement?.y === settlement?.y &&
-			prevSettlement?.kind === settlement?.kind;
+		const sameHit =
+			prevHit?.settlement.x === hit?.settlement.x &&
+			prevHit?.settlement.y === hit?.settlement.y &&
+			prevHit?.settlement.kind === hit?.settlement.kind &&
+			prevHit?.district?.name === hit?.district?.name;
 
-		if (sameCell && sameSettlement) return;
+		if (sameCell && sameHit) return;
 
 		hoverRef.current = cell;
-		settlementHoverRef.current = settlement;
+		settlementHoverRef.current = hit;
 		setHoveredCell(cell);
-		setHoveredSettlement(settlement);
-		paint(cell, settlement);
+		setHoveredHit(hit);
+		paint(cell, hit);
 	}
 
 	function handleMouseLeave() {
@@ -182,8 +183,8 @@ export function GridMapView({
 		if (cell) onCellSelect?.(cell);
 	}
 
-	const status = hoveredSettlement
-		? formatSettlementLabel(hoveredSettlement)
+	const status = hoveredHit
+		? formatSettlementLabel(hoveredHit.settlement, hoveredHit.district)
 		: hoveredCell
 			? hoverLabel(hoveredCell)
 			: idleLabel;

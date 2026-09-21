@@ -39,12 +39,36 @@ export interface RegionId {
 
 export type SettlementKind = "Hamlet" | "Village" | "Town" | "City";
 
+export type DistrictKind =
+	| "Center"
+	| "Market"
+	| "Craft"
+	| "Port"
+	| "Temple"
+	| "Noble"
+	| "Forest"
+	| "Residential"
+	| "Outskirts";
+
+export interface District {
+	kind: DistrictKind;
+	name: string;
+	inner: number;
+	outer: number;
+	a0: number;
+	span: number;
+}
+
 export interface Settlement {
 	x: number;
 	y: number;
 	kind: SettlementKind;
 	population: number;
 	radius: number;
+	name: string;
+	coreDx: number;
+	coreDy: number;
+	districts: District[];
 }
 
 export interface WorldBounds {

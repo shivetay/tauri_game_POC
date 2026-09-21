@@ -16,6 +16,8 @@ import {
 
 export type {
 	ChunkId,
+	District,
+	DistrictKind,
 	RegionId,
 	Settlement,
 	SettlementKind,

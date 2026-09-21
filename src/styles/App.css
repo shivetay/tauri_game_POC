@@ -101,6 +101,10 @@
   text-align: left;
 }
 
+.biome-legend h2:not(:first-child) {
+  margin-top: 0.85rem;
+}
+
 .biome-legend ul {
   list-style: none;
   margin: 0;
