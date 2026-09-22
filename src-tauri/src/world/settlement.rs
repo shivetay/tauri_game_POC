@@ -20,6 +20,8 @@ const CHANNEL_LAYOUT: u64 = 45;
 const CHANNEL_CORE: u64 = 46;
 const CHANNEL_ROAD: u64 = 47;
 const SCORE_FLOOR: f32 = 0.18;
+/// Villages below this population stay as a single footprint (no district zones).
+const VILLAGE_DISTRICT_POP_MIN: u32 = 500;
 const TAU: f32 = std::f32::consts::TAU;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -994,8 +996,23 @@ fn layout_on_streets(
     (0.0, 0.0, districts, streets)
 }
 
+fn wants_districts(kind: SettlementKind, population: u32) -> bool {
+    match kind {
+        SettlementKind::City | SettlementKind::Town => true,
+        SettlementKind::Village => population >= VILLAGE_DISTRICT_POP_MIN,
+        SettlementKind::Hamlet => false,
+    }
+}
+
 fn refine_street_layouts(seed: u64, sampler: &TerrainSampler, settlements: &mut [Settlement]) {
     for (i, s) in settlements.iter_mut().enumerate() {
+        if !wants_districts(s.kind, s.population) {
+            s.core_dx = 0.0;
+            s.core_dy = 0.0;
+            s.districts.clear();
+            s.streets.clear();
+            continue;
+        }
         let index = layout_key(s.x, s.y).wrapping_add(i as u64);
         let (water_dir, forest_dir) = neighbor_dirs(sampler, s.x, s.y, s.radius);
         let approaches = s.road_approaches.clone();
@@ -1975,14 +1992,19 @@ mod tests {
                 SettlementKind::Village => {
                     saw[2] = true;
                     assert!((150..=1_200).contains(&s.population));
-                    assert!(!s.districts.is_empty());
-                    assert!(!s.streets.is_empty());
+                    if s.population >= VILLAGE_DISTRICT_POP_MIN {
+                        assert!(!s.districts.is_empty());
+                        assert!(!s.streets.is_empty());
+                    } else {
+                        assert!(s.districts.is_empty());
+                        assert!(s.streets.is_empty());
+                    }
                 }
                 SettlementKind::Hamlet => {
                     saw[3] = true;
                     assert!((20..=150).contains(&s.population));
-                    assert!(!s.districts.is_empty());
-                    assert!(!s.streets.is_empty());
+                    assert!(s.districts.is_empty());
+                    assert!(s.streets.is_empty());
                 }
             }
         }

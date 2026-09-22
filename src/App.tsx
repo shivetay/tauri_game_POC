@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ChunkId, RegionId } from "./api/world";
 import {
 	DEFAULT_TERRAIN_PARAMS,
@@ -15,6 +15,7 @@ import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
 import { useSettlements } from "./hooks/useSettlements";
 import { useWorldMap } from "./hooks/useWorldMap";
+import { viewBoundsForChunk } from "./map/settlements";
 import "./styles/MapScreen.css";
 import "./styles/App.css";
 
@@ -31,13 +32,29 @@ function App() {
 
 	const { grid, loading, error } = useWorldMap(seed, terrainParams);
 	const regionMap = useRegionMap(seed, terrainParams, selectedRegion);
+	const settlementMap = useSettlements(seed, terrainParams);
+	const chunkViewBounds = useMemo(() => {
+		if (!selectedRegion || !selectedChunk || settlementMap.loading) {
+			return null;
+		}
+		return viewBoundsForChunk(
+			selectedRegion,
+			selectedChunk,
+			settlementMap.settlements,
+		);
+	}, [
+		selectedRegion,
+		selectedChunk,
+		settlementMap.loading,
+		settlementMap.settlements,
+	]);
 	const chunkMap = useChunkMap(
 		seed,
 		terrainParams,
 		selectedRegion,
 		selectedChunk,
+		chunkViewBounds,
 	);
-	const settlementMap = useSettlements(seed, terrainParams);
 
 	function applySeedValue(nextSeed: number) {
 		setDraftSeed(String(nextSeed));
@@ -73,7 +90,7 @@ function App() {
 		loading || regionMap.loading || chunkMap.loading || settlementMap.loading;
 	const mapLoading =
 		selectedRegion && selectedChunk
-			? chunkMap.loading
+			? chunkMap.loading || settlementMap.loading
 			: selectedRegion
 				? regionMap.loading || settlementMap.loading
 				: loading || settlementMap.loading;
@@ -89,14 +106,17 @@ function App() {
 			<div className="map-area">
 				{mapLoading && <MapLoadingOverlay label={mapLoadingLabel} />}
 				{selectedRegion && selectedChunk ? (
-					<ChunkMapView
-						region={selectedRegion}
-						chunk={selectedChunk}
-						grid={chunkMap.grid}
-						onBack={() => setSelectedChunk(null)}
-						settlements={settlementMap.settlements}
-						roads={settlementMap.roads}
-					/>
+					chunkViewBounds ? (
+						<ChunkMapView
+							region={selectedRegion}
+							chunk={selectedChunk}
+							grid={chunkMap.grid}
+							onBack={() => setSelectedChunk(null)}
+							settlements={settlementMap.settlements}
+							roads={settlementMap.roads}
+							worldBounds={chunkViewBounds}
+						/>
+					) : null
 				) : selectedRegion ? (
 					<RegionMapView
 						region={selectedRegion}

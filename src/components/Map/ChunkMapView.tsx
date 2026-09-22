@@ -1,11 +1,11 @@
 import {
 	CHUNK_RESOLUTION,
-	chunkWorldBounds,
 	type ChunkId,
 	type RegionId,
 	type Road,
 	type Settlement,
 	type TerrainGrid,
+	type WorldBounds,
 } from "../../api/world";
 import { GridMapView } from "./GridMapView";
 
@@ -16,6 +16,7 @@ interface ChunkMapViewProps {
 	onBack: () => void;
 	settlements: Settlement[];
 	roads: Road[];
+	worldBounds: WorldBounds;
 }
 
 export function ChunkMapView({
@@ -25,6 +26,7 @@ export function ChunkMapView({
 	onBack,
 	settlements,
 	roads,
+	worldBounds,
 }: ChunkMapViewProps) {
 	const cellSize = grid?.width ?? CHUNK_RESOLUTION;
 
@@ -46,7 +48,7 @@ export function ChunkMapView({
 			settlements={settlements}
 			roads={roads}
 			roadDetail="close"
-			worldBounds={chunkWorldBounds(region, chunk)}
+			worldBounds={worldBounds}
 		/>
 	);
 }

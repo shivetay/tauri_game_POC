@@ -1,6 +1,8 @@
 import type {
+	ChunkId,
 	District,
 	DistrictKind,
+	RegionId,
 	Road,
 	RoadKind,
 	RoadSurface,
@@ -10,6 +12,7 @@ import type {
 	TileType,
 	WorldBounds,
 } from "../types/world";
+import { chunkWorldBounds } from "../api/world";
 
 export interface SettlementInfo {
 	label: string;
@@ -123,6 +126,56 @@ export function settlementFootprintRadius(
 		SETTLEMENT_INFO[settlement.kind].minPx,
 		settlement.radius * pxPerWorld,
 	);
+}
+
+function settlementWorldRadius(settlement: Settlement): number {
+	let maxR = 1;
+	for (const p of planOutline(settlement)) {
+		const r = Math.hypot(p.x, p.y);
+		if (r > maxR) maxR = r;
+	}
+	return settlement.radius * maxR * 1.06;
+}
+
+export function viewBoundsForChunk(
+	region: RegionId,
+	chunk: ChunkId,
+	settlements: Settlement[],
+): WorldBounds {
+	const chunkBounds = chunkWorldBounds(region, chunk);
+	const x0 = chunkBounds.x0;
+	const y0 = chunkBounds.y0;
+	const x1 = x0 + chunkBounds.span;
+	const y1 = y0 + chunkBounds.span;
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const settlement of settlements) {
+		const r = settlementWorldRadius(settlement);
+		if (
+			settlement.x + r < x0 ||
+			settlement.x - r > x1 ||
+			settlement.y + r < y0 ||
+			settlement.y - r > y1
+		) {
+			continue;
+		}
+		minX = Math.min(minX, settlement.x - r);
+		minY = Math.min(minY, settlement.y - r);
+		maxX = Math.max(maxX, settlement.x + r);
+		maxY = Math.max(maxY, settlement.y + r);
+	}
+	if (!Number.isFinite(minX)) {
+		return chunkBounds;
+	}
+	if (minX >= x0 && maxX <= x1 && minY >= y0 && maxY <= y1) {
+		return chunkBounds;
+	}
+	const span = Math.max(maxX - minX, maxY - minY);
+	const cx = (minX + maxX) / 2;
+	const cy = (minY + maxY) / 2;
+	return { x0: cx - span / 2, y0: cy - span / 2, span };
 }
 
 export type SettlementDrawStyle = "marker" | "plan";
@@ -643,7 +696,7 @@ function pullOntoLand(
 		for (let k = 0; k < 10; k++) {
 			const p = localToCanvas(x, y, sx, sy, rot, stretch);
 			const biome = biomeAtCanvas(grid, p.x, p.y);
-			if (biome !== null && !isWaterBiome(biome)) return { x, y };
+			if (biome === null || !isWaterBiome(biome)) return { x, y };
 			x *= 0.8;
 			y *= 0.8;
 		}
@@ -666,7 +719,7 @@ function punchWater(
 			const i = (y * width + x) * 4;
 			if (data[i + 3] === 0) continue;
 			const biome = biomeAtCanvas(grid, ox + x, oy + y);
-			if (biome === null || isWaterBiome(biome)) data[i + 3] = 0;
+			if (biome !== null && isWaterBiome(biome)) data[i + 3] = 0;
 		}
 	}
 	overlay.putImageData(img, 0, 0);
@@ -882,13 +935,10 @@ function paintRoadStroke(
 		strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
 		return;
 	}
-	const dash = detail === "close" ? [5, 4] : [3.5, 3];
-	ctx.setLineDash(dash);
 	ctx.strokeStyle =
 		detail === "close" ? "rgba(86, 68, 46, 0.8)" : "rgba(86, 68, 46, 0.62)";
 	ctx.lineWidth = width;
 	strokeRoadPath(ctx, road.points, bounds, canvasWidth, canvasHeight);
-	ctx.setLineDash([]);
 }
 
 export function drawRoads(

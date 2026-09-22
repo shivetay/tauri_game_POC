@@ -64,28 +64,30 @@ export function generateRegion(
 	return invoke<TerrainGrid>("generate_region", { seed, params, rx, ry });
 }
 
-export function generateChunk(
+export function generateSettlements(seed: number, params: TerrainParams) {
+	assertTauri();
+	return invoke<SettlementMap>("generate_settlements", { seed, params });
+}
+
+export function generateView(
 	seed: number,
 	params: TerrainParams,
 	rx: number,
 	ry: number,
-	cx: number,
-	cy: number,
+	x0: number,
+	y0: number,
+	span: number,
 ) {
 	assertTauri();
-	return invoke<TerrainGrid>("generate_chunk", {
+	return invoke<TerrainGrid>("generate_view", {
 		seed,
 		params,
 		rx,
 		ry,
-		cx,
-		cy,
+		x0,
+		y0,
+		span,
 	});
-}
-
-export function generateSettlements(seed: number, params: TerrainParams) {
-	assertTauri();
-	return invoke<SettlementMap>("generate_settlements", { seed, params });
 }
 
 export function globalWorldBounds(): WorldBounds {
