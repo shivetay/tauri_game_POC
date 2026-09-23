@@ -5,6 +5,7 @@ use crate::world::settlement::{
     Settlement, SettlementKind,
 };
 use crate::world::types::{TerrainGrid, TileType};
+use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 // ── Public types ───────────────────────────────────────────────────────────
 
@@ -276,94 +277,93 @@ fn clear_alpha(pixels: &mut [u8], width: usize, x: usize, y: usize) {
     pixels[i + 3] = 0;
 }
 
-fn fill_disk(pixels: &mut [u8], width: usize, height: usize, cx: f32, cy: f32, radius: f32, color: Rgba) {
-    if radius <= 0.0 {
-        return;
-    }
-    let r2 = radius * radius;
-    let x0 = (cx - radius).floor() as i32;
-    let x1 = (cx + radius).ceil() as i32;
-    let y0 = (cy - radius).floor() as i32;
-    let y1 = (cy + radius).ceil() as i32;
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            if dx * dx + dy * dy <= r2 {
-                blend_pixel(pixels, width, height, x, y, color);
-            }
-        }
-    }
-}
-
-/// Thick line segment as a stadium (rectangle + round ends via disks at joints).
-fn stroke_segment(
+/// Anti-aliased polyline via tiny-skia (round caps/joins).
+fn stroke_polyline(
     pixels: &mut [u8],
     width: usize,
     height: usize,
-    ax: f32,
-    ay: f32,
-    bx: f32,
-    by: f32,
-    half: f32,
+    pts: &[(f32, f32)],
+    line_w: f32,
     color: Rgba,
 ) {
-    let dx = bx - ax;
-    let dy = by - ay;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 1e-6 {
-        fill_disk(pixels, width, height, ax, ay, half, color);
+    if pts.len() < 2 || line_w <= 0.0 || color.a == 0 || width == 0 || height == 0 {
         return;
     }
-    // Cover the capsule with a bounding box scan.
-    let pad = half + 1.0;
-    let min_x = ax.min(bx) - pad;
-    let max_x = ax.max(bx) + pad;
-    let min_y = ay.min(by) - pad;
-    let max_y = ay.max(by) + pad;
-    let x0 = min_x.floor() as i32;
-    let x1 = max_x.ceil() as i32;
-    let y0 = min_y.floor() as i32;
-    let y1 = max_y.ceil() as i32;
-    let half2 = half * half;
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let t = ((px - ax) * dx + (py - ay) * dy) / (len * len);
-            let t = t.clamp(0.0, 1.0);
-            let qx = ax + dx * t;
-            let qy = ay + dy * t;
-            let ddx = px - qx;
-            let ddy = py - qy;
-            if ddx * ddx + ddy * ddy <= half2 {
-                blend_pixel(pixels, width, height, x, y, color);
-            }
-        }
-    }
-}
 
-fn stroke_polyline(pixels: &mut [u8], width: usize, height: usize, pts: &[(f32, f32)], line_w: f32, color: Rgba) {
-    if pts.is_empty() || line_w <= 0.0 {
+    let pad = line_w * 0.5 + 2.0;
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for &(x, y) in pts {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    min_x = (min_x - pad).floor().max(0.0);
+    min_y = (min_y - pad).floor().max(0.0);
+    max_x = (max_x + pad).ceil().min(width as f32);
+    max_y = (max_y + pad).ceil().min(height as f32);
+    let pm_w = (max_x - min_x).ceil() as u32;
+    let pm_h = (max_y - min_y).ceil() as u32;
+    if pm_w == 0 || pm_h == 0 {
         return;
     }
-    let half = line_w * 0.5;
-    for w in pts.windows(2) {
-        stroke_segment(
-            pixels,
-            width,
-            height,
-            w[0].0,
-            w[0].1,
-            w[1].0,
-            w[1].1,
-            half,
-            color,
-        );
+
+    let mut pb = PathBuilder::new();
+    pb.move_to(pts[0].0 - min_x, pts[0].1 - min_y);
+    for &(x, y) in &pts[1..] {
+        pb.line_to(x - min_x, y - min_y);
     }
-    // Round caps / joins (canvas lineCap/lineJoin = round).
-    for &(x, y) in pts {
-        fill_disk(pixels, width, height, x, y, half, color);
+    let Some(path) = pb.finish() else {
+        return;
+    };
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(color.r, color.g, color.b, color.a);
+    paint.anti_alias = true;
+
+    let mut stroke = Stroke::default();
+    stroke.width = line_w;
+    stroke.line_cap = LineCap::Round;
+    stroke.line_join = LineJoin::Round;
+
+    let Some(mut pixmap) = Pixmap::new(pm_w, pm_h) else {
+        return;
+    };
+    pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+
+    let ox = min_x as i32;
+    let oy = min_y as i32;
+    let data = pixmap.data();
+    for py in 0..pm_h as i32 {
+        for px in 0..pm_w as i32 {
+            let si = ((py as u32 * pm_w + px as u32) * 4) as usize;
+            let a = data[si + 3];
+            if a == 0 {
+                continue;
+            }
+            // tiny-skia stores premultiplied RGBA — unpremultiply for blend_pixel.
+            let (r, g, b) = if a == 255 {
+                (data[si], data[si + 1], data[si + 2])
+            } else {
+                let af = a as f32;
+                (
+                    ((data[si] as f32 * 255.0) / af).round().clamp(0.0, 255.0) as u8,
+                    ((data[si + 1] as f32 * 255.0) / af).round().clamp(0.0, 255.0) as u8,
+                    ((data[si + 2] as f32 * 255.0) / af).round().clamp(0.0, 255.0) as u8,
+                )
+            };
+            blend_pixel(
+                pixels,
+                width,
+                height,
+                ox + px,
+                oy + py,
+                Rgba::rgba(r, g, b, a),
+            );
+        }
     }
 }
 

@@ -208,7 +208,14 @@ fn habitat_at(seed: u64, world_x: f64, world_y: f64, biome: TileType) -> Habitat
 }
 
 pub fn generate_region_ecology(config: WorldConfig, region: RegionId) -> RegionEcologyMap {
-    let sampler = TerrainSampler::new(config.clone());
+    generate_region_ecology_sampled(&TerrainSampler::new(config), region)
+}
+
+pub fn generate_region_ecology_sampled(
+    sampler: &TerrainSampler,
+    region: RegionId,
+) -> RegionEcologyMap {
+    let config = sampler.config();
     let bounds = RegionBounds::from_region(region, config.region_size);
     // One cell per world unit — readable wash, light payload.
     let width = config.region_size;
@@ -238,7 +245,7 @@ pub fn generate_region_ecology(config: WorldConfig, region: RegionId) -> RegionE
         for tx in 0..tiles_across {
             tiles.push(tile_expectation(
                 seed,
-                &sampler,
+                sampler,
                 &bounds,
                 tx,
                 ty,
@@ -446,7 +453,15 @@ pub fn generate_chunk_ecology(
     region: RegionId,
     chunk: ChunkId,
 ) -> ChunkEcologyMap {
-    let sampler = TerrainSampler::new(config.clone());
+    generate_chunk_ecology_sampled(&TerrainSampler::new(config), region, chunk)
+}
+
+pub fn generate_chunk_ecology_sampled(
+    sampler: &TerrainSampler,
+    region: RegionId,
+    chunk: ChunkId,
+) -> ChunkEcologyMap {
+    let config = sampler.config();
     let bounds = RegionBounds::from_chunk(region, chunk, config.region_size, config.chunk_size);
     let seed = config.seed;
     let x0 = bounds.world_x0 as f64;

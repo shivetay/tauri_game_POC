@@ -205,10 +205,14 @@ struct Candidate {
 }
 
 pub fn generate(config: WorldConfig) -> SettlementMap {
+    generate_sampled(&TerrainSampler::new(config))
+}
+
+pub fn generate_sampled(sampler: &TerrainSampler) -> SettlementMap {
+    let config = sampler.config();
     let seed = config.seed;
     let world_w = config.world_width as f64;
     let world_h = config.world_height as f64;
-    let sampler = TerrainSampler::new(config);
     let cols = (world_w / STEP).round().max(1.0) as u32;
     let rows = (world_h / STEP).round().max(1.0) as u32;
 
@@ -290,12 +294,12 @@ pub fn generate(config: WorldConfig) -> SettlementMap {
 
     let roads = build_roads(
         seed,
-        &sampler,
+        sampler,
         world_w as f32,
         world_h as f32,
         &mut out,
     );
-    refine_street_layouts(seed, &sampler, &mut out);
+    refine_street_layouts(seed, sampler, &mut out);
     SettlementMap {
         settlements: out,
         roads,

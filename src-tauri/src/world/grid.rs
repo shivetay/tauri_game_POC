@@ -5,7 +5,11 @@ use crate::world::sampler::TerrainSampler;
 use crate::world::types::{ChunkId, RegionBounds, RegionId, TerrainCell, TerrainGrid};
 
 pub fn generate_global_grid(config: WorldConfig) -> TerrainGrid {
-    let sampler = TerrainSampler::new(config.clone());
+    generate_global_grid_sampled(&TerrainSampler::new(config))
+}
+
+pub fn generate_global_grid_sampled(sampler: &TerrainSampler) -> TerrainGrid {
+    let config = sampler.config();
     let width = config.macro_resolution;
     let height = config.macro_resolution;
     let world_w = config.world_width as f64;
@@ -34,7 +38,11 @@ pub fn generate_global_grid(config: WorldConfig) -> TerrainGrid {
 }
 
 pub fn generate_region_grid(config: WorldConfig, region: RegionId) -> TerrainGrid {
-    let sampler = TerrainSampler::new(config.clone());
+    generate_region_grid_sampled(&TerrainSampler::new(config), region)
+}
+
+pub fn generate_region_grid_sampled(sampler: &TerrainSampler, region: RegionId) -> TerrainGrid {
+    let config = sampler.config();
     let bounds = RegionBounds::from_region(region, config.region_size);
     let width = config.micro_resolution;
     let height = config.micro_resolution;
@@ -72,7 +80,17 @@ pub fn generate_view_grid(
     world_y0: f32,
     span: f32,
 ) -> TerrainGrid {
-    let sampler = TerrainSampler::new(config.clone());
+    generate_view_grid_sampled(&TerrainSampler::new(config), region, world_x0, world_y0, span)
+}
+
+pub fn generate_view_grid_sampled(
+    sampler: &TerrainSampler,
+    region: RegionId,
+    world_x0: f32,
+    world_y0: f32,
+    span: f32,
+) -> TerrainGrid {
+    let config = sampler.config();
     let region_bounds = RegionBounds::from_region(region, config.region_size);
     let width = config.chunk_resolution;
     let height = config.chunk_resolution;

@@ -7,13 +7,21 @@ use crate::settlements_draw::{
 };
 use crate::world::ecology::{ChunkEcologyMap, RegionEcologyMap};
 use crate::world::settlement::{Road, Settlement};
-use crate::world::types::{TerrainGrid, TileType};
+use crate::world::types::{TerrainCell, TerrainGrid, TileType};
 
 const MAX_ELEVATION_M: f32 = 10_000.0;
 const HIGH_ELEVATION_M: f32 = 5_385.0;
 
 fn lerp_byte(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+fn lerp_f(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn is_water_biome(biome: TileType) -> bool {
+    matches!(biome, TileType::Water | TileType::DeepWater)
 }
 
 fn shade_high_elevation(biome: TileType, elevation_m: f32, base: [u8; 3]) -> [u8; 3] {
@@ -42,14 +50,65 @@ fn shade_high_elevation(biome: TileType, elevation_m: f32, base: [u8; 3]) -> [u8
     }
 }
 
+fn cell_rgb(cell: &TerrainCell) -> [f32; 3] {
+    let [r, g, b] = shade_high_elevation(cell.biome, cell.elevation, biome_rgb(cell.biome));
+    [r as f32, g as f32, b as f32]
+}
+
+/// Sharp biome fills; only a light land↔water fringe for coast AA.
+fn cell_rgb_with_coast_aa(grid: &TerrainGrid, x: usize, y: usize) -> [u8; 3] {
+    let w = grid.width as usize;
+    let h = grid.height as usize;
+    let center = &grid.cells[y * w + x];
+    let base = cell_rgb(center);
+    let center_water = is_water_biome(center.biome);
+
+    let mut opposite = [0.0f32; 3];
+    let mut opposite_n = 0.0f32;
+    for (dx, dy) in [(-1i32, 0), (1, 0), (0, -1), (0, 1)] {
+        let nx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
+        let ny = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
+        let n = &grid.cells[ny * w + nx];
+        if is_water_biome(n.biome) != center_water {
+            let rgb = cell_rgb(n);
+            opposite[0] += rgb[0];
+            opposite[1] += rgb[1];
+            opposite[2] += rgb[2];
+            opposite_n += 1.0;
+        }
+    }
+
+    let rgb = if opposite_n > 0.0 {
+        // Mild fringe only — keeps biomes crisp inland.
+        let t = (0.22 * opposite_n / 4.0).clamp(0.0, 0.22);
+        [
+            lerp_f(base[0], opposite[0] / opposite_n, t),
+            lerp_f(base[1], opposite[1] / opposite_n, t),
+            lerp_f(base[2], opposite[2] / opposite_n, t),
+        ]
+    } else {
+        base
+    };
+
+    [
+        rgb[0].round().clamp(0.0, 255.0) as u8,
+        rgb[1].round().clamp(0.0, 255.0) as u8,
+        rgb[2].round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
 pub fn terrain_grid_to_rgba(grid: &TerrainGrid) -> Vec<u8> {
+    let w = grid.width as usize;
+    let h = grid.height as usize;
     let mut rgba = Vec::with_capacity(grid.cells.len() * 4);
-    for cell in &grid.cells {
-        let [r, g, b] = shade_high_elevation(cell.biome, cell.elevation, biome_rgb(cell.biome));
-        rgba.push(r);
-        rgba.push(g);
-        rgba.push(b);
-        rgba.push(255);
+    for y in 0..h {
+        for x in 0..w {
+            let [r, g, b] = cell_rgb_with_coast_aa(grid, x, y);
+            rgba.push(r);
+            rgba.push(g);
+            rgba.push(b);
+            rgba.push(255);
+        }
     }
     rgba
 }
