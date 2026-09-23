@@ -1469,6 +1469,7 @@ fn build_roads(
     }
 
     let mut roads: Vec<Road> = Vec::new();
+    let mut bridges = BridgeRegistry::default();
     for (k, (kind, a, b)) in links.iter().enumerate() {
         let ax = settlements[*a].x;
         let ay = settlements[*a].y;
@@ -1493,10 +1494,12 @@ fn build_roads(
             wobble_amt(*kind, surface),
             world_w,
             world_h,
+            &bridges,
         );
         if points.len() < 2 {
             continue;
         }
+        bridges.register_road(&points);
         let ang_a = (points[1].y - ay).atan2(points[1].x - ax);
         let last = points.len() - 1;
         let ang_b = (points[last - 1].y - by).atan2(points[last - 1].x - bx);
@@ -1508,6 +1511,31 @@ fn build_roads(
             points,
         });
     }
+
+    // Second pass: early roads must respect bridges registered by later links
+    // (no polyline may cut through an existing shore→shore span).
+    let mut all_bridges = BridgeRegistry::default();
+    for road in &roads {
+        all_bridges.register_road(&road.points);
+    }
+    for road in &mut roads {
+        let redone = finalize_bridge_polyline(sampler, road.points.clone(), &all_bridges);
+        if redone.len() >= 2 {
+            road.points = redone;
+        }
+    }
+    // Refresh registry after rewrites, then one more tighten pass.
+    all_bridges = BridgeRegistry::default();
+    for road in &roads {
+        all_bridges.register_road(&road.points);
+    }
+    for road in &mut roads {
+        let redone = finalize_bridge_polyline(sampler, road.points.clone(), &all_bridges);
+        if redone.len() >= 2 {
+            road.points = redone;
+        }
+    }
+
     roads
 }
 
@@ -1520,43 +1548,230 @@ fn road_pt(x: f32, y: f32) -> RoadPoint {
 }
 
 const ROAD_CELL: f32 = 6.0;
+/// Snap / share when span endpoints are this close.
+const BRIDGE_SHARE_R: f32 = 12.0;
+/// No second span inside this catchment.
+const BRIDGE_CATCHMENT_R: f32 = 32.0;
+const BRIDGE_SHARE_EXTRA: u32 = 6;
+const BRIDGE_NEW_EXTRA: u32 = 90;
+/// Max shore-to-shore jump length (world units).
+const BRIDGE_MAX_LEN: f32 = 22.0;
+
+/// One shore→shore portal. Roads may meet only on dry endpoints — never mid-river.
+#[derive(Clone, Copy)]
+struct BridgeSpan {
+    a: (f32, f32),
+    b: (f32, f32),
+}
+
+impl BridgeSpan {
+    fn mid(self) -> (f32, f32) {
+        ((self.a.0 + self.b.0) * 0.5, (self.a.1 + self.b.1) * 0.5)
+    }
+
+    fn endpoint_near(self, x: f32, y: f32, r: f32) -> bool {
+        dist2(x, y, self.a.0, self.a.1) <= r * r || dist2(x, y, self.b.0, self.b.1) <= r * r
+    }
+
+    fn same_as(self, a: (f32, f32), b: (f32, f32)) -> bool {
+        let r = BRIDGE_SHARE_R;
+        (dist2(self.a.0, self.a.1, a.0, a.1) <= r * r
+            && dist2(self.b.0, self.b.1, b.0, b.1) <= r * r)
+            || (dist2(self.a.0, self.a.1, b.0, b.1) <= r * r
+                && dist2(self.b.0, self.b.1, a.0, a.1) <= r * r)
+    }
+
+    /// True when spans cross in their interiors (shared shore portals do not count).
+    fn crosses(self, other: BridgeSpan) -> bool {
+        if self.same_as(other.a, other.b) {
+            return false;
+        }
+        // Touching at a shared portal is a land junction, not a mid-river X.
+        let touch = self.endpoint_near(other.a.0, other.a.1, BRIDGE_SHARE_R * 0.55)
+            || self.endpoint_near(other.b.0, other.b.1, BRIDGE_SHARE_R * 0.55);
+        if touch {
+            return false;
+        }
+        segments_properly_intersect(self.a, self.b, other.a, other.b)
+    }
+}
+
+/// Proper segment intersection (excludes endpoint-only touches).
+fn segments_properly_intersect(
+    a1: (f32, f32),
+    a2: (f32, f32),
+    b1: (f32, f32),
+    b2: (f32, f32),
+) -> bool {
+    fn orient(p: (f32, f32), q: (f32, f32), r: (f32, f32)) -> f32 {
+        (q.1 - p.1) * (r.0 - q.0) - (q.0 - p.0) * (r.1 - q.1)
+    }
+    fn on_seg(p: (f32, f32), q: (f32, f32), r: (f32, f32)) -> bool {
+        q.0 >= p.0.min(r.0) - 1e-3
+            && q.0 <= p.0.max(r.0) + 1e-3
+            && q.1 >= p.1.min(r.1) - 1e-3
+            && q.1 <= p.1.max(r.1) + 1e-3
+    }
+    let o1 = orient(a1, a2, b1);
+    let o2 = orient(a1, a2, b2);
+    let o3 = orient(b1, b2, a1);
+    let o4 = orient(b1, b2, a2);
+    if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+        return true;
+    }
+    // Colinear overlaps count as illegal dual spans on the same reach.
+    const EPS: f32 = 1e-2;
+    if o1.abs() <= EPS && on_seg(a1, b1, a2) {
+        return true;
+    }
+    if o2.abs() <= EPS && on_seg(a1, b2, a2) {
+        return true;
+    }
+    if o3.abs() <= EPS && on_seg(b1, a1, b2) {
+        return true;
+    }
+    if o4.abs() <= EPS && on_seg(b1, a2, b2) {
+        return true;
+    }
+    false
+}
+
+#[derive(Default)]
+struct BridgeRegistry {
+    spans: Vec<BridgeSpan>,
+}
+
+impl BridgeRegistry {
+    fn find_span(&self, a: (f32, f32), b: (f32, f32)) -> Option<BridgeSpan> {
+        self.spans.iter().copied().find(|s| s.same_as(a, b))
+    }
+
+    fn nearest_mid(&self, x: f32, y: f32, max_r: f32) -> Option<BridgeSpan> {
+        let max2 = max_r * max_r;
+        let mut best: Option<(f32, BridgeSpan)> = None;
+        for s in &self.spans {
+            let m = s.mid();
+            let d2 = dist2(x, y, m.0, m.1);
+            if d2 > max2 {
+                continue;
+            }
+            if best.map(|(d, _)| d2 < d).unwrap_or(true) {
+                best = Some((d2, *s));
+            }
+        }
+        best.map(|(_, s)| s)
+    }
+
+    fn blocks_new_near(&self, x: f32, y: f32) -> bool {
+        self.nearest_mid(x, y, BRIDGE_CATCHMENT_R).is_some()
+    }
+
+    /// Existing span that this candidate must reuse (same, nearby, or would cross).
+    fn resolve_span(&self, candidate: BridgeSpan) -> Option<BridgeSpan> {
+        if let Some(s) = self.find_span(candidate.a, candidate.b) {
+            return Some(s);
+        }
+        let mid = candidate.mid();
+        if let Some(s) = self.nearest_mid(mid.0, mid.1, BRIDGE_CATCHMENT_R) {
+            return Some(s);
+        }
+        // Geometric cross even outside catchment → force the crossed span.
+        for s in &self.spans {
+            if s.crosses(candidate) {
+                return Some(*s);
+            }
+        }
+        None
+    }
+
+    /// Span whose open segment is cut by chord `p→q` (not when `p→q` is that span).
+    fn span_cut_by(&self, p: (f32, f32), q: (f32, f32)) -> Option<BridgeSpan> {
+        let chord = BridgeSpan { a: p, b: q };
+        for s in &self.spans {
+            if s.same_as(p, q) {
+                continue;
+            }
+            if s.crosses(chord) {
+                return Some(*s);
+            }
+        }
+        None
+    }
+
+    fn conflicts_new(&self, candidate: BridgeSpan) -> bool {
+        self.spans.iter().any(|s| {
+            !s.same_as(candidate.a, candidate.b)
+                && (s.crosses(candidate)
+                    || dist2(
+                        s.mid().0,
+                        s.mid().1,
+                        candidate.mid().0,
+                        candidate.mid().1,
+                    ) <= BRIDGE_CATCHMENT_R * BRIDGE_CATCHMENT_R)
+        })
+    }
+
+    fn register(&mut self, span: BridgeSpan) {
+        if self.resolve_span(span).is_some() {
+            return;
+        }
+        if self.conflicts_new(span) {
+            return;
+        }
+        self.spans.push(span);
+    }
+
+    fn register_road(&mut self, points: &[RoadPoint]) {
+        for i in 1..points.len().saturating_sub(1) {
+            if points[i].crossing != Some(RoadCrossing::Bridge) {
+                continue;
+            }
+            let prev = &points[i - 1];
+            let next = &points[i + 1];
+            if prev.crossing.is_some() || next.crossing.is_some() {
+                continue;
+            }
+            self.register(BridgeSpan {
+                a: (prev.x, prev.y),
+                b: (next.x, next.y),
+            });
+        }
+    }
+}
 
 fn is_dry_land(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
     !is_water_biome(sampler.cell_at(x as f64, y as f64, LodLevel::Macro).elevation)
 }
 
-/// Whether this cell may host a road: dry land, or a deterministic river bridge.
+fn is_river_water(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
+    let cell = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
+    if !is_water_biome(cell.elevation) {
+        return false;
+    }
+    sampler.river_at(x as f64, y as f64).channel > 0.55
+}
+
+/// Land cells only — water is never a walkable node (bridges are jump edges).
 fn road_cell_pass(
     sampler: &TerrainSampler,
     x: f32,
     y: f32,
-    kind: RoadKind,
-    seed: u64,
+    _kind: RoadKind,
+    _seed: u64,
+    _bridges: &BridgeRegistry,
 ) -> Option<(u32, Option<RoadCrossing>)> {
-    let cell = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
-    let river = sampler.river_at(x as f64, y as f64);
-    let elev = cell.elevation;
-
-    if !is_water_biome(elev) {
-        let cost = if elev >= HIGH_M {
-            16
-        } else if elev >= UPLAND_M {
-            12
-        } else {
-            10
-        };
-        return Some((cost, None));
-    }
-
-    // Ocean / deep lake — no road.
-    if river.channel <= 0.55 {
+    if !is_dry_land(sampler, x, y) {
         return None;
     }
-
-    if !river_bridge_allowed(kind, seed, x, y) {
-        return None;
-    }
-    Some((48, Some(RoadCrossing::Bridge)))
+    let elev = sampler.cell_at(x as f64, y as f64, LodLevel::Macro).elevation;
+    let cost = if elev >= HIGH_M {
+        16
+    } else if elev >= UPLAND_M {
+        12
+    } else {
+        10
+    };
+    Some((cost, None))
 }
 
 fn river_bridge_allowed(kind: RoadKind, seed: u64, x: f32, y: f32) -> bool {
@@ -1571,51 +1786,120 @@ fn river_bridge_allowed(kind: RoadKind, seed: u64, x: f32, y: f32) -> bool {
     }
 }
 
-/// Sample the step between road cells — thin rivers sit between 6u cell centers.
-fn step_river_crossing(
+/// Validate a dry→dry segment that must cross only river water; returns span + toll.
+fn shore_to_shore_span(
     sampler: &TerrainSampler,
     kind: RoadKind,
     seed: u64,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-) -> Option<(u32, Option<(f32, f32)>)> {
-    let mut extra = 0u32;
-    let mut bridge_at: Option<(f32, f32)> = None;
-    for k in 1..8 {
-        let t = k as f32 / 8.0;
-        let x = x0 + (x1 - x0) * t;
-        let y = y0 + (y1 - y0) * t;
-        let cell = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
-        let river = sampler.river_at(x as f64, y as f64);
-        if !is_water_biome(cell.elevation) {
+    a: (f32, f32),
+    b: (f32, f32),
+    bridges: &BridgeRegistry,
+) -> Option<(u32, BridgeSpan)> {
+    if !is_dry_land(sampler, a.0, a.1) || !is_dry_land(sampler, b.0, b.1) {
+        return None;
+    }
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < ROAD_CELL * 0.75 || dist > BRIDGE_MAX_LEN {
+        return None;
+    }
+    let n = ((dist / 1.5).ceil() as usize).clamp(4, 24);
+    let mut water = 0usize;
+    let mut mid = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+    let mut saw_mid = false;
+    for i in 1..n {
+        let t = i as f32 / n as f32;
+        let x = a.0 + dx * t;
+        let y = a.1 + dy * t;
+        if is_dry_land(sampler, x, y) {
             continue;
         }
-        if river.channel <= 0.55 {
-            return None; // ocean / lake span
+        if !is_river_water(sampler, x, y) {
+            return None; // ocean / lake
         }
-        if !river_bridge_allowed(kind, seed, x, y) {
-            return None; // no passage at this crossing
-        }
-        if bridge_at.is_none() {
-            // Modest toll — short bridge beats a long dry detour.
-            extra = 18;
-            bridge_at = Some((x, y));
+        water += 1;
+        if !saw_mid {
+            mid = (x, y);
+            saw_mid = true;
         }
     }
-    Some((extra, bridge_at))
+    if water == 0 {
+        return None; // no river to cross
+    }
+    // Must not leave dry pockets mid-span (fork bait): water should be contiguous chunk.
+    // Soft check: require water samples roughly in the middle third+.
+    let candidate = BridgeSpan { a, b };
+    if let Some(existing) = bridges.resolve_span(candidate) {
+        return Some((BRIDGE_SHARE_EXTRA, existing));
+    }
+    if bridges.conflicts_new(candidate) || bridges.blocks_new_near(mid.0, mid.1) {
+        // Parallel / crossing span blocked — A* must walk to an existing portal.
+        return None;
+    }
+    if !river_bridge_allowed(kind, seed, mid.0, mid.1) {
+        return None;
+    }
+    Some((BRIDGE_NEW_EXTRA, candidate))
 }
 
-fn cell_allows_road(
+/// From a dry cell, list opposite-bank dry cells reachable by a single bridge jump.
+fn bridge_jumps_from(
     sampler: &TerrainSampler,
-    x: f32,
-    y: f32,
     kind: RoadKind,
     seed: u64,
-) -> bool {
-    road_cell_pass(sampler, x, y, kind, seed).is_some()
+    x: i32,
+    y: i32,
+    cols: i32,
+    rows: i32,
+    bridges: &BridgeRegistry,
+) -> Vec<(i32, i32, u32, BridgeSpan)> {
+    let ax = (x as f32 + 0.5) * ROAD_CELL;
+    let ay = (y as f32 + 0.5) * ROAD_CELL;
+    let max_cells = (BRIDGE_MAX_LEN / ROAD_CELL).ceil() as i32;
+    let mut out = Vec::new();
+    for dy in -max_cells..=max_cells {
+        for dx in -max_cells..=max_cells {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let nx = x + dx;
+            let ny = y + dy;
+            if nx < 0 || ny < 0 || nx >= cols || ny >= rows {
+                continue;
+            }
+            let bx = (nx as f32 + 0.5) * ROAD_CELL;
+            let by = (ny as f32 + 0.5) * ROAD_CELL;
+            let Some((toll, span)) =
+                shore_to_shore_span(sampler, kind, seed, (ax, ay), (bx, by), bridges)
+            else {
+                continue;
+            };
+            out.push((nx, ny, toll, span));
+        }
+    }
+    // Also: if a registered span has an endpoint near here, jump to the other end.
+    for s in &bridges.spans {
+        let (from, to) = if s.endpoint_near(ax, ay, BRIDGE_SHARE_R) {
+            if dist2(ax, ay, s.a.0, s.a.1) <= dist2(ax, ay, s.b.0, s.b.1) {
+                (s.a, s.b)
+            } else {
+                (s.b, s.a)
+            }
+        } else {
+            continue;
+        };
+        let tx = (to.0 / ROAD_CELL).floor() as i32;
+        let ty = (to.1 / ROAD_CELL).floor() as i32;
+        if tx < 0 || ty < 0 || tx >= cols || ty >= rows {
+            continue;
+        }
+        out.push((tx, ty, BRIDGE_SHARE_EXTRA, *s));
+        let _ = from;
+    }
+    out
 }
+
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct PathNode {
@@ -1681,6 +1965,7 @@ fn land_path(
     y1: f32,
     world_w: f32,
     world_h: f32,
+    bridges: &BridgeRegistry,
 ) -> Vec<RoadPoint> {
     let cols = (world_w / ROAD_CELL).ceil() as i32;
     let rows = (world_h / ROAD_CELL).ceil() as i32;
@@ -1697,7 +1982,8 @@ fn land_path(
     let n = (cols * rows) as usize;
     let mut dist = vec![u32::MAX; n];
     let mut prev = vec![-1i32; n];
-    let mut prev_bridge: Vec<Option<(f32, f32)>> = vec![None; n];
+    // When arriving via a bridge jump, store the shore→shore span.
+    let mut prev_span: Vec<Option<BridgeSpan>> = vec![None; n];
     let idx = |x: i32, y: i32| (y * cols + x) as usize;
     let mut heap = BinaryHeap::new();
     dist[idx(start.0, start.1)] = 0;
@@ -1727,6 +2013,8 @@ fn land_path(
         }
         let cx = (x as f32 + 0.5) * ROAD_CELL;
         let cy = (y as f32 + 0.5) * ROAD_CELL;
+
+        // Walk on dry land only (no stepping into water).
         for (dx, dy, step) in dirs {
             let nx = x + dx;
             let ny = y + dy;
@@ -1738,30 +2026,56 @@ fn land_path(
                 let ay = (y as f32 + 0.5) * ROAD_CELL;
                 let bx = (x as f32 + 0.5) * ROAD_CELL;
                 let by = (y as f32 + dy as f32 + 0.5) * ROAD_CELL;
-                if !cell_allows_road(sampler, ax, ay, kind, seed)
-                    || !cell_allows_road(sampler, bx, by, kind, seed)
-                {
+                if !is_dry_land(sampler, ax, ay) || !is_dry_land(sampler, bx, by) {
                     continue;
                 }
             }
             let wx = (nx as f32 + 0.5) * ROAD_CELL;
             let wy = (ny as f32 + 0.5) * ROAD_CELL;
-            let Some((terrain, _)) = road_cell_pass(sampler, wx, wy, kind, seed) else {
+            let Some((terrain, _)) = road_cell_pass(sampler, wx, wy, kind, seed, bridges) else {
                 continue;
             };
-            let Some((cross_extra, bridge_at)) =
-                step_river_crossing(sampler, kind, seed, cx, cy, wx, wy)
-            else {
-                continue;
-            };
-            let next = cost
-                .saturating_add(step * terrain / 10)
-                .saturating_add(cross_extra);
+            let ni = idx(nx, ny);
+            if straight_dry_land(sampler, cx, cy, wx, wy) {
+                let next = cost.saturating_add(step * terrain / 10);
+                if next < dist[ni] {
+                    dist[ni] = next;
+                    prev[ni] = idx(x, y) as i32;
+                    prev_span[ni] = None;
+                    heap.push(PathNode {
+                        cost: next,
+                        x: nx,
+                        y: ny,
+                    });
+                }
+            } else if let Some((toll, span)) =
+                shore_to_shore_span(sampler, kind, seed, (cx, cy), (wx, wy), bridges)
+            {
+                // Thin river between neighbouring cells → short shore→shore span.
+                let next = cost.saturating_add(toll);
+                if next < dist[ni] {
+                    dist[ni] = next;
+                    prev[ni] = idx(x, y) as i32;
+                    prev_span[ni] = Some(span);
+                    heap.push(PathNode {
+                        cost: next,
+                        x: nx,
+                        y: ny,
+                    });
+                }
+            }
+        }
+
+        // Shore→shore bridge jumps (single span, no mid-river junctions).
+        for (nx, ny, toll, span) in
+            bridge_jumps_from(sampler, kind, seed, x, y, cols, rows, bridges)
+        {
+            let next = cost.saturating_add(toll);
             let ni = idx(nx, ny);
             if next < dist[ni] {
                 dist[ni] = next;
                 prev[ni] = idx(x, y) as i32;
-                prev_bridge[ni] = bridge_at;
+                prev_span[ni] = Some(span);
                 heap.push(PathNode {
                     cost: next,
                     x: nx,
@@ -1776,49 +2090,60 @@ fn land_path(
     }
 
     let mut cells = Vec::new();
-    let mut bridges = Vec::new();
+    let mut spans = Vec::new();
     let mut cur = idx(goal.0, goal.1) as i32;
     while cur >= 0 {
         let i = cur as usize;
         let cx = (i as i32) % cols;
         let cy = (i as i32) / cols;
         cells.push((cx, cy));
-        bridges.push(prev_bridge[i]);
+        spans.push(prev_span[i]);
         cur = prev[i];
         if (cx, cy) == start {
             break;
         }
     }
     cells.reverse();
-    bridges.reverse();
+    spans.reverse();
     if cells.is_empty() {
         return Vec::new();
     }
 
-    let mut points = Vec::with_capacity(cells.len() + bridges.len() + 2);
+    let mut points = Vec::with_capacity(cells.len() * 2 + 2);
     points.push(road_pt(x0, y0));
     for (i, (cx, cy)) in cells.iter().enumerate() {
-        if let Some((bx, by)) = bridges[i] {
-            points.push(RoadPoint {
-                x: bx,
-                y: by,
-                crossing: Some(RoadCrossing::Bridge),
-            });
-        }
         let wx = (*cx as f32 + 0.5) * ROAD_CELL;
         let wy = (*cy as f32 + 0.5) * ROAD_CELL;
-        let crossing = road_cell_pass(sampler, wx, wy, kind, seed).and_then(|(_, c)| c);
-        points.push(RoadPoint {
-            x: wx,
-            y: wy,
-            crossing,
-        });
+        if let Some(span) = spans[i] {
+            // Arrive via bridge: emit near portal, bridge mid, then this shore.
+            // Orient span so `b` is the arrival cell.
+            let (enter, leave) = if dist2(span.b.0, span.b.1, wx, wy)
+                <= dist2(span.a.0, span.a.1, wx, wy)
+            {
+                (span.a, span.b)
+            } else {
+                (span.b, span.a)
+            };
+            let mid = span.mid();
+            push_road_pt_dedup(&mut points, road_pt(enter.0, enter.1));
+            push_road_pt_dedup(
+                &mut points,
+                RoadPoint {
+                    x: mid.0,
+                    y: mid.1,
+                    crossing: Some(RoadCrossing::Bridge),
+                },
+            );
+            push_road_pt_dedup(&mut points, road_pt(leave.0, leave.1));
+        } else {
+            push_road_pt_dedup(&mut points, road_pt(wx, wy));
+        }
     }
-    points.push(road_pt(x1, y1));
-    simplify_road(points)
+    push_road_pt_dedup(&mut points, road_pt(x1, y1));
+    finalize_bridge_polyline(sampler, simplify_road(sampler, points), bridges)
 }
 
-fn simplify_road(points: Vec<RoadPoint>) -> Vec<RoadPoint> {
+fn simplify_road(sampler: &TerrainSampler, points: Vec<RoadPoint>) -> Vec<RoadPoint> {
     if points.len() <= 3 {
         return points;
     }
@@ -1827,13 +2152,17 @@ fn simplify_road(points: Vec<RoadPoint>) -> Vec<RoadPoint> {
         let a = out.last().unwrap();
         let b = &points[i];
         let c = &points[i + 1];
+        let keep_bridge = b.crossing.is_some()
+            || a.crossing.is_some()
+            || c.crossing.is_some();
         let abx = b.x - a.x;
         let aby = b.y - a.y;
         let bcx = c.x - b.x;
         let bcy = c.y - b.y;
         let cross = (abx * bcy - aby * bcx).abs();
-        let keep = cross > 4.0 || b.crossing.is_some();
-        if keep {
+        // Never drop a bend that would create a dry→dry chord across water.
+        let chord_ok = straight_dry_land(sampler, a.x, a.y, c.x, c.y);
+        if keep_bridge || cross > 4.0 || !chord_ok {
             out.push(b.clone());
         }
     }
@@ -1867,6 +2196,7 @@ fn trace_road(
     wobble: f32,
     world_w: f32,
     world_h: f32,
+    bridges: &BridgeRegistry,
 ) -> Vec<RoadPoint> {
     let points = if straight_dry_land(sampler, x0, y0, x1, y1) {
         let dx = x1 - x0;
@@ -1896,109 +2226,199 @@ fn trace_road(
         }
         pts
     } else {
-        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h)
+        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h, bridges)
     };
     if points.len() < 2 {
         return points;
     }
+    // Wobbled straight paths must stay dry; otherwise repath with bridges.
     let points = if points
         .iter()
-        .skip(1)
-        .rev()
-        .skip(1)
-        .any(|p| !cell_allows_road(sampler, p.x, p.y, kind, seed))
+        .any(|p| p.crossing.is_none() && !is_dry_land(sampler, p.x, p.y))
     {
-        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h)
+        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h, bridges)
     } else {
         points
     };
-    clamp_road_to_land_or_bridge(sampler, kind, seed, points)
+    finalize_bridge_polyline(sampler, points, bridges)
 }
 
-/// Densify, then keep dry ground; river spans become a single Bridge or the road ends at shore.
-fn clamp_road_to_land_or_bridge(
+
+fn river_mid_on_chord(
     sampler: &TerrainSampler,
-    kind: RoadKind,
-    seed: u64,
-    points: Vec<RoadPoint>,
-) -> Vec<RoadPoint> {
-    if points.len() < 2 {
-        return points;
-    }
-    let mut dense: Vec<(f32, f32)> = Vec::new();
-    for w in points.windows(2) {
-        let (ax, ay) = (w[0].x, w[0].y);
-        let (bx, by) = (w[1].x, w[1].y);
-        let dist = ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)).sqrt();
-        let steps = ((dist / 1.25).ceil() as usize).clamp(1, 64);
-        for s in 0..steps {
-            let t = s as f32 / steps as f32;
-            dense.push((ax + (bx - ax) * t, ay + (by - ay) * t));
+    a: (f32, f32),
+    b: (f32, f32),
+) -> (f32, f32) {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let best = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+    for k in 1..12 {
+        let t = k as f32 / 12.0;
+        let x = a.0 + dx * t;
+        let y = a.1 + dy * t;
+        if is_river_water(sampler, x, y) {
+            return (x, y);
         }
     }
-    if let Some(last) = points.last() {
-        dense.push((last.x, last.y));
+    best
+}
+
+fn orient_side(a: (f32, f32), b: (f32, f32), p: (f32, f32)) -> f32 {
+    (b.1 - a.1) * (p.0 - a.0) - (b.0 - a.0) * (p.1 - a.1)
+}
+
+/// Route `from→to` using span portals. Opposite banks cross mid-river once; same bank skirts a portal.
+fn append_via_span(
+    out: &mut Vec<RoadPoint>,
+    sampler: &TerrainSampler,
+    from: (f32, f32),
+    to: (f32, f32),
+    span: BridgeSpan,
+) {
+    let sa = span.a;
+    let sb = span.b;
+    let side_from = orient_side(sa, sb, from);
+    let side_to = orient_side(sa, sb, to);
+    let opposite = side_from * side_to < 0.0
+        || shore_water_only(sampler, from.0, from.1, to.0, to.1);
+
+    let (enter, leave) = if dist2(sa.0, sa.1, from.0, from.1) <= dist2(sb.0, sb.1, from.0, from.1)
+    {
+        (sa, sb)
+    } else {
+        (sb, sa)
+    };
+
+    push_road_pt_dedup(out, road_pt(from.0, from.1));
+    push_road_pt_dedup(out, road_pt(enter.0, enter.1));
+    if opposite {
+        let mid = span.mid();
+        let mid = if is_river_water(sampler, mid.0, mid.1) {
+            mid
+        } else {
+            river_mid_on_chord(sampler, enter, leave)
+        };
+        push_road_pt_dedup(
+            out,
+            RoadPoint {
+                x: mid.0,
+                y: mid.1,
+                crossing: Some(RoadCrossing::Bridge),
+            },
+        );
+        push_road_pt_dedup(out, road_pt(leave.0, leave.1));
+    }
+    // Same bank: only touch the nearer portal (no mid-river junction / no cutting the deck).
+    push_road_pt_dedup(out, road_pt(to.0, to.1));
+}
+
+/// Enforce shore→bridge→shore only; insert bridges on river chords; drop water stubs.
+fn finalize_bridge_polyline(
+    sampler: &TerrainSampler,
+    points: Vec<RoadPoint>,
+    bridges: &BridgeRegistry,
+) -> Vec<RoadPoint> {
+    if points.len() < 2 {
+        return Vec::new();
     }
 
-    let mut out: Vec<RoadPoint> = Vec::new();
+    // 1) Keep only dry points and valid bridge mids (strip water stubs / orphan mids).
+    let mut cleaned: Vec<RoadPoint> = Vec::new();
     let mut i = 0usize;
-    while i < dense.len() {
-        let (x, y) = dense[i];
-        let elev = sampler
-            .cell_at(x as f64, y as f64, LodLevel::Macro)
-            .elevation;
-        let river = sampler.river_at(x as f64, y as f64);
-
-        if !is_water_biome(elev) {
-            push_road_pt_dedup(&mut out, road_pt(x, y));
+    while i < points.len() {
+        let p = &points[i];
+        if p.crossing == Some(RoadCrossing::Bridge) {
             i += 1;
+            continue; // rebuild bridges from shore pairs below
+        }
+        if is_dry_land(sampler, p.x, p.y) {
+            push_road_pt_dedup(&mut cleaned, road_pt(p.x, p.y));
+        }
+        i += 1;
+    }
+    if cleaned.len() < 2 {
+        return Vec::new();
+    }
+
+    // 2) Between consecutive dry points: land, or one shore→shore bridge; never cut a span.
+    let mut out: Vec<RoadPoint> = Vec::with_capacity(cleaned.len() * 2);
+    out.push(cleaned[0].clone());
+    for w in cleaned.windows(2) {
+        let a = &w[0];
+        let b = &w[1];
+        let ap = (a.x, a.y);
+        let bp = (b.x, b.y);
+
+        // Any chord that cuts an existing bridge must use that bridge (or skirt a portal).
+        if let Some(s) = bridges.span_cut_by(ap, bp) {
+            append_via_span(&mut out, sampler, ap, bp, s);
             continue;
         }
 
-        // Water: try to span a river with a bridge to the next dry sample.
-        let river_ok = river.channel > 0.55 && river_bridge_allowed(kind, seed, x, y);
-        if river_ok {
-            let mut j = i;
-            while j < dense.len() {
-                let (sx, sy) = dense[j];
-                let e = sampler
-                    .cell_at(sx as f64, sy as f64, LodLevel::Macro)
-                    .elevation;
-                let r = sampler.river_at(sx as f64, sy as f64);
-                if !is_water_biome(e) {
-                    break;
-                }
-                if r.channel <= 0.55 || !river_bridge_allowed(kind, seed, sx, sy) {
-                    // Hits ocean / blocked river — stop at last dry.
-                    return out;
-                }
-                j += 1;
-            }
-            if j < dense.len() {
-                let mid = dense[i + (j - i) / 2];
-                push_road_pt_dedup(
-                    &mut out,
-                    RoadPoint {
-                        x: mid.0,
-                        y: mid.1,
-                        crossing: Some(RoadCrossing::Bridge),
-                    },
-                );
-                i = j;
-                continue;
-            }
+        if straight_dry_land(sampler, a.x, a.y, b.x, b.y) {
+            push_road_pt_dedup(&mut out, road_pt(b.x, b.y));
+            continue;
         }
-
-        // Dead-end at shore (or no passage).
-        break;
+        if !shore_water_only(sampler, a.x, a.y, b.x, b.y) {
+            return Vec::new();
+        }
+        let candidate = BridgeSpan { a: ap, b: bp };
+        let span = bridges.resolve_span(candidate);
+        if let Some(s) = span {
+            append_via_span(&mut out, sampler, ap, bp, s);
+            continue;
+        }
+        if bridges.conflicts_new(candidate) {
+            return Vec::new();
+        }
+        let mid = river_mid_on_chord(sampler, ap, bp);
+        push_road_pt_dedup(&mut out, road_pt(ap.0, ap.1));
+        push_road_pt_dedup(
+            &mut out,
+            RoadPoint {
+                x: mid.0,
+                y: mid.1,
+                crossing: Some(RoadCrossing::Bridge),
+            },
+        );
+        push_road_pt_dedup(&mut out, road_pt(bp.0, bp.1));
     }
 
     if out.len() < 2 {
-        Vec::new()
-    } else {
-        out
+        return Vec::new();
     }
+    if out.first().is_some_and(|p| p.crossing.is_some())
+        || out.last().is_some_and(|p| p.crossing.is_some())
+    {
+        return Vec::new();
+    }
+    out
 }
+
+fn shore_water_only(sampler: &TerrainSampler, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist > BRIDGE_MAX_LEN * 1.35 {
+        return false;
+    }
+    let n = ((dist / 1.5).ceil() as usize).clamp(4, 24);
+    let mut water = 0usize;
+    for i in 1..n {
+        let t = i as f32 / n as f32;
+        let x = x0 + dx * t;
+        let y = y0 + dy * t;
+        if is_dry_land(sampler, x, y) {
+            continue;
+        }
+        if !is_river_water(sampler, x, y) {
+            return false;
+        }
+        water += 1;
+    }
+    water > 0
+}
+
 
 fn push_road_pt_dedup(out: &mut Vec<RoadPoint>, p: RoadPoint) {
     if let Some(last) = out.last() {
@@ -2153,12 +2573,11 @@ mod tests {
                 let c = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
                 let river = sampler.river_at(x as f64, y as f64);
                 if c.elevation < WATER_M {
-                    // Mid-segment may skim a bridge span between marked vertices.
                     assert!(
                         river.channel > 0.55
-                            || p.crossing == Some(RoadCrossing::Bridge)
-                            || q.crossing == Some(RoadCrossing::Bridge),
-                        "road segment in non-bridge water at ({x}, {y})"
+                            && (p.crossing == Some(RoadCrossing::Bridge)
+                                || q.crossing == Some(RoadCrossing::Bridge)),
+                        "river crossing must be a marked bridge span at ({x}, {y})"
                     );
                 }
             }
@@ -2191,6 +2610,125 @@ mod tests {
             "expected at least one river bridge on seed 6, got {bridges}"
         );
     }
+
+    #[test]
+    fn seed_6_bridges_are_shore_to_shore() {
+        let config = seed_config(6);
+        let sampler = TerrainSampler::new(config.clone());
+        let map = generate(config);
+        let mut bridge_n = 0usize;
+        for road in &map.roads {
+            let pts = &road.points;
+            assert!(
+                is_dry_land(&sampler, pts[0].x, pts[0].y),
+                "road must start on shore/land"
+            );
+            assert!(
+                is_dry_land(&sampler, pts[pts.len() - 1].x, pts[pts.len() - 1].y),
+                "road must end on shore/land"
+            );
+            assert!(pts[0].crossing.is_none() && pts[pts.len() - 1].crossing.is_none());
+            for i in 0..pts.len() {
+                let p = &pts[i];
+                if p.crossing == Some(RoadCrossing::Bridge) {
+                    bridge_n += 1;
+                    assert!(i > 0 && i + 1 < pts.len(), "bridge cannot be an endpoint");
+                    let prev = &pts[i - 1];
+                    let next = &pts[i + 1];
+                    assert!(prev.crossing.is_none() && next.crossing.is_none());
+                    assert!(
+                        is_dry_land(&sampler, prev.x, prev.y),
+                        "bridge prev must be dry"
+                    );
+                    assert!(
+                        is_dry_land(&sampler, next.x, next.y),
+                        "bridge next must be dry"
+                    );
+                    assert!(
+                        is_river_water(&sampler, p.x, p.y),
+                        "bridge mid must sit on river"
+                    );
+                    assert!(
+                        shore_water_only(&sampler, prev.x, prev.y, next.x, next.y),
+                        "bridge must span shore→shore over river only"
+                    );
+                } else {
+                    assert!(
+                        is_dry_land(&sampler, p.x, p.y),
+                        "non-bridge vertex in water at ({}, {})",
+                        p.x,
+                        p.y
+                    );
+                }
+            }
+        }
+        assert!(bridge_n >= 1, "expected bridges on seed 6");
+
+        // Collect unique shore→shore spans; none may cross.
+        let mut spans: Vec<BridgeSpan> = Vec::new();
+        for road in &map.roads {
+            let pts = &road.points;
+            for i in 1..pts.len().saturating_sub(1) {
+                if pts[i].crossing != Some(RoadCrossing::Bridge) {
+                    continue;
+                }
+                let span = BridgeSpan {
+                    a: (pts[i - 1].x, pts[i - 1].y),
+                    b: (pts[i + 1].x, pts[i + 1].y),
+                };
+                if spans.iter().any(|s| s.same_as(span.a, span.b)) {
+                    continue;
+                }
+                spans.push(span);
+            }
+        }
+        // No road chord (except a span itself) may cut a bridge.
+        for road in &map.roads {
+            let pts = &road.points;
+            for w in pts.windows(2) {
+                if w[0].crossing.is_some() || w[1].crossing.is_some() {
+                    continue; // shore↔mid legs are the span
+                }
+                let chord = ( (w[0].x, w[0].y), (w[1].x, w[1].y) );
+                for s in &spans {
+                    if s.same_as(chord.0, chord.1) {
+                        continue;
+                    }
+                    assert!(
+                        !s.crosses(BridgeSpan {
+                            a: chord.0,
+                            b: chord.1,
+                        }),
+                        "road cuts bridge near {:?}",
+                        s.mid()
+                    );
+                }
+            }
+        }
+
+        for i in 0..spans.len() {
+            for j in i + 1..spans.len() {
+                assert!(
+                    !spans[i].crosses(spans[j]),
+                    "bridges must not cross: {:?} vs {:?}",
+                    spans[i].mid(),
+                    spans[j].mid()
+                );
+                let d = dist2(
+                    spans[i].mid().0,
+                    spans[i].mid().1,
+                    spans[j].mid().0,
+                    spans[j].mid().1,
+                )
+                .sqrt();
+                assert!(
+                    d + 1e-3 >= BRIDGE_CATCHMENT_R,
+                    "parallel bridges too close ({d:.1})"
+                );
+            }
+        }
+    }
+
 
     fn has_kind(districts: &[District], kind: DistrictKind) -> bool {
         districts.iter().any(|d| d.kind == kind)

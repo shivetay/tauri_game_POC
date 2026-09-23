@@ -885,36 +885,37 @@ function paintBridgeMarks(
 ) {
 	const marks = road.points.filter((p) => p.crossing === "Bridge");
 	if (marks.length === 0) return;
-	const len =
-		detail === "close" ? 6.5 : detail === "region" ? 5.0 : 3.8;
-	const deck =
-		detail === "close" ? 3.2 : detail === "region" ? 2.4 : 1.8;
+	const acrossWorld =
+		detail === "close" ? 3.2 : detail === "region" ? 2.6 : 2.0;
 	ctx.setLineDash([]);
 	for (let i = 0; i < road.points.length; i++) {
 		const p = road.points[i];
 		if (p.crossing !== "Bridge") continue;
 		const prev = road.points[Math.max(0, i - 1)];
 		const next = road.points[Math.min(road.points.length - 1, i + 1)];
+		// Deck only between the two shores — never a junction glyph mid-span.
 		const dx = next.x - prev.x;
 		const dy = next.y - prev.y;
 		const dist = Math.hypot(dx, dy) || 1;
-		const tx = dx / dist;
-		const ty = dy / dist;
-		const nx = -ty;
-		const ny = tx;
-		const sx = ((p.x - bounds.x0) / bounds.span) * canvasWidth;
-		const sy = ((p.y - bounds.y0) / bounds.span) * canvasHeight;
-		const along = (deck * canvasWidth) / bounds.span;
-		const across = (len * canvasWidth) / bounds.span;
-		// Deck plank along the road.
+		const nx = -dy / dist;
+		const ny = dx / dist;
+		const toCanvas = (x: number, y: number) => ({
+			x: ((x - bounds.x0) / bounds.span) * canvasWidth,
+			y: ((y - bounds.y0) / bounds.span) * canvasHeight,
+		});
+		const a = toCanvas(prev.x, prev.y);
+		const b = toCanvas(next.x, next.y);
+		const across = (acrossWorld * canvasWidth) / bounds.span;
 		ctx.strokeStyle =
 			detail === "close" ? "rgba(96, 72, 40, 0.95)" : "rgba(86, 64, 36, 0.88)";
 		ctx.lineWidth = detail === "close" ? 3.2 : 2.4;
 		ctx.beginPath();
-		ctx.moveTo(sx - tx * along, sy - ty * along);
-		ctx.lineTo(sx + tx * along, sy + ty * along);
+		ctx.moveTo(a.x, a.y);
+		ctx.lineTo(b.x, b.y);
 		ctx.stroke();
-		// Cross-ties.
+		// One cross-tie at mid-river only.
+		const sx = ((p.x - bounds.x0) / bounds.span) * canvasWidth;
+		const sy = ((p.y - bounds.y0) / bounds.span) * canvasHeight;
 		ctx.strokeStyle =
 			detail === "close" ? "rgba(42, 28, 14, 0.95)" : "rgba(40, 28, 14, 0.85)";
 		ctx.lineWidth = detail === "close" ? 2.0 : 1.5;
