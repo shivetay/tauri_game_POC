@@ -2,12 +2,17 @@ use noise::SuperSimplex;
 
 use crate::world::biome::biome;
 use crate::world::config::{LodLevel, WorldConfig};
+use crate::world::elevation::{
+    is_water_biome, norm_to_meters, preserve_macro_sea_class, SEA_LEVEL_NORM, WATER_M,
+};
 use crate::world::noise::{clamp01, fbm, lerp, redistribute, smoothstep};
 use crate::world::prng::{derive_seed, hash_seed};
-use crate::world::elevation::{norm_to_meters, preserve_macro_sea_class, SEA_LEVEL_NORM};
 use crate::world::ridge::orogeny_delta;
+use crate::world::river::{
+    river_sample, RiverSample, RIVER_CHANNEL_ELEV_M, RIVER_MOISTURE_BOOST,
+};
 use crate::world::shape::shape_value;
-use crate::world::types::{RegionBounds, TerrainCell};
+use crate::world::types::{RegionBounds, TerrainCell, TileType};
 
 pub struct TerrainSampler {
     config: WorldConfig,
@@ -17,6 +22,8 @@ pub struct TerrainSampler {
     coast_noise: SuperSimplex,
     ridge_noise: SuperSimplex,
     ridge_warp_noise: SuperSimplex,
+    river_noise: SuperSimplex,
+    river_warp_noise: SuperSimplex,
 }
 
 impl TerrainSampler {
@@ -27,6 +34,8 @@ impl TerrainSampler {
         let coast_seed = derive_seed(config.seed, "coast");
         let ridge_seed = derive_seed(config.seed, "ridge");
         let ridge_warp_seed = derive_seed(config.seed, "ridge-warp");
+        let river_seed = derive_seed(config.seed, "river");
+        let river_warp_seed = derive_seed(config.seed, "river-warp");
 
         Self {
             config,
@@ -36,6 +45,8 @@ impl TerrainSampler {
             coast_noise: SuperSimplex::new(coast_seed),
             ridge_noise: SuperSimplex::new(ridge_seed),
             ridge_warp_noise: SuperSimplex::new(ridge_warp_seed),
+            river_noise: SuperSimplex::new(river_seed),
+            river_warp_noise: SuperSimplex::new(river_warp_seed),
         }
     }
 
@@ -99,9 +110,42 @@ impl TerrainSampler {
         norm_to_meters(self.elevation_norm_at(world_x, world_y, lod))
     }
 
+    pub(crate) fn river_at(&self, world_x: f64, world_y: f64) -> RiverSample {
+        river_sample(
+            &self.river_noise,
+            &self.river_warp_noise,
+            self.config.seed,
+            world_x,
+            world_y,
+        )
+    }
+
+    /// Apply river channel carve + bank moisture. Only carves when already on land.
+    fn apply_river(
+        &self,
+        world_x: f64,
+        world_y: f64,
+        mut elevation: f32,
+        mut moisture: f32,
+    ) -> (f32, f32) {
+        if is_water_biome(elevation) {
+            return (elevation, moisture);
+        }
+
+        let river = self.river_at(world_x, world_y);
+        moisture = (moisture + river.proximity * RIVER_MOISTURE_BOOST).clamp(0.0, 1.0);
+
+        if river.channel > 0.55 {
+            elevation = RIVER_CHANNEL_ELEV_M;
+        }
+
+        (elevation, moisture)
+    }
+
     pub fn cell_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> TerrainCell {
-        let elevation = self.elevation_at(world_x, world_y, lod);
-        let moisture = self.moisture_at(world_x, world_y);
+        let base_elev = self.elevation_at(world_x, world_y, lod);
+        let base_moist = self.moisture_at(world_x, world_y);
+        let (elevation, moisture) = self.apply_river(world_x, world_y, base_elev, base_moist);
         TerrainCell {
             elevation,
             moisture,
@@ -148,12 +192,108 @@ impl TerrainSampler {
     }
 
     pub fn cell_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> TerrainCell {
-        let elevation = self.elevation_at_region(world_x, world_y, bounds);
-        let moisture = self.moisture_at(world_x, world_y);
+        let base_elev = self.elevation_at_region(world_x, world_y, bounds);
+        let base_moist = self.moisture_at(world_x, world_y);
+        // Only carve when macro land — avoids flipping ocean cells via river noise.
+        let macro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Macro);
+        let (elevation, moisture) = if macro_n >= SEA_LEVEL_NORM {
+            self.apply_river(world_x, world_y, base_elev, base_moist)
+        } else {
+            (base_elev, base_moist)
+        };
         TerrainCell {
             elevation,
             moisture,
             biome: biome(elevation, moisture),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::config::WorldConfig;
+
+    #[test]
+    fn river_channel_on_land_is_water() {
+        let sampler = TerrainSampler::new(WorldConfig {
+            seed: 6,
+            ..WorldConfig::default()
+        });
+        let mut found = false;
+        'search: for yi in 0..256u32 {
+            for xi in 0..256u32 {
+                let x = f64::from(xi) * 2.0;
+                let y = f64::from(yi) * 2.0;
+                let base = sampler.elevation_at(x, y, LodLevel::Macro);
+                if is_water_biome(base) {
+                    continue;
+                }
+                let river = sampler.river_at(x, y);
+                if river.channel <= 0.55 {
+                    continue;
+                }
+                let cell = sampler.cell_at(x, y, LodLevel::Macro);
+                assert_eq!(cell.biome, TileType::Water);
+                assert!(cell.elevation < WATER_M);
+                found = true;
+                break 'search;
+            }
+        }
+        assert!(found, "expected a land river channel for seed 6");
+    }
+
+    #[test]
+    fn river_bank_boosts_arid_moisture_toward_fertile_biome() {
+        let sampler = TerrainSampler::new(WorldConfig {
+            seed: 6,
+            ..WorldConfig::default()
+        });
+        // Directly verify moisture boost turns arid lowland into non-Desert.
+        let dry = 0.08f32;
+        let prox = 0.85f32;
+        let boosted = (dry + prox * RIVER_MOISTURE_BOOST).clamp(0.0, 1.0);
+        let elev = crate::world::elevation::norm_to_meters(0.45);
+        let b = biome(elev, boosted);
+        assert_ne!(b, TileType::Desert);
+        assert!(matches!(
+            b,
+            TileType::Savanna | TileType::Grass | TileType::Swamp
+        ));
+
+        // And that real samples exist with meaningful bank proximity on land.
+        let mut found_bank = false;
+        'search: for yi in 0..256u32 {
+            for xi in 0..256u32 {
+                let x = f64::from(xi) * 2.0;
+                let y = f64::from(yi) * 2.0;
+                let base_elev = sampler.elevation_at(x, y, LodLevel::Macro);
+                if is_water_biome(base_elev) {
+                    continue;
+                }
+                let river = sampler.river_at(x, y);
+                if river.proximity < 0.5 || river.channel > 0.55 {
+                    continue;
+                }
+                let cell = sampler.cell_at(x, y, LodLevel::Macro);
+                assert!(cell.moisture >= sampler.moisture_at(x, y) - 1e-4);
+                found_bank = true;
+                break 'search;
+            }
+        }
+        assert!(found_bank, "expected a land bank sample for seed 6");
+    }
+
+    #[test]
+    fn cell_at_is_deterministic_with_rivers() {
+        let sampler = TerrainSampler::new(WorldConfig {
+            seed: 6,
+            ..WorldConfig::default()
+        });
+        let a = sampler.cell_at(140.0, 200.0, LodLevel::Macro);
+        let b = sampler.cell_at(140.0, 200.0, LodLevel::Macro);
+        assert_eq!(a.biome, b.biome);
+        assert!((a.elevation - b.elevation).abs() < 1e-5);
+        assert!((a.moisture - b.moisture).abs() < 1e-5);
     }
 }

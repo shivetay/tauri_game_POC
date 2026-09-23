@@ -110,3 +110,45 @@ export interface WorldBounds {
 	y0: number;
 	span: number;
 }
+
+export type FaunaGroup = "LargeMammal" | "Bird" | "SmallFauna";
+
+export type LifeKind = "Flora" | "Fauna";
+
+export interface HabitatCell {
+	potential: number;
+	largeMammals: number;
+	birds: number;
+	smallFauna: number;
+}
+
+export interface RegionTileExpect {
+	flora: string[];
+	fauna: string[];
+}
+
+export interface RegionEcologyMap {
+	width: number;
+	height: number;
+	cells: HabitatCell[];
+	tilesAcross: number;
+	tiles: RegionTileExpect[];
+}
+
+export interface LifeInstance {
+	x: number;
+	y: number;
+	kind: LifeKind;
+	group: FaunaGroup | null;
+	species: string;
+	subspecies: string;
+	biome: TileType;
+}
+
+export interface ChunkEcologyMap {
+	width: number;
+	height: number;
+	cells: HabitatCell[];
+	flora: LifeInstance[];
+	fauna: LifeInstance[];
+}

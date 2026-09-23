@@ -1,6 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+	ChunkEcologyMap,
 	ChunkId,
+	RegionEcologyMap,
 	RegionId,
 	SettlementMap,
 	TerrainGrid,
@@ -15,10 +17,17 @@ import {
 } from "../utils/constants";
 
 export type {
+	ChunkEcologyMap,
 	ChunkId,
 	District,
 	DistrictKind,
+	FaunaGroup,
+	HabitatCell,
+	LifeInstance,
+	LifeKind,
+	RegionEcologyMap,
 	RegionId,
+	RegionTileExpect,
 	Road,
 	RoadKind,
 	RoadSurface,
@@ -67,6 +76,40 @@ export function generateRegion(
 export function generateSettlements(seed: number, params: TerrainParams) {
 	assertTauri();
 	return invoke<SettlementMap>("generate_settlements", { seed, params });
+}
+
+export function generateRegionEcology(
+	seed: number,
+	params: TerrainParams,
+	rx: number,
+	ry: number,
+) {
+	assertTauri();
+	return invoke<RegionEcologyMap>("generate_region_ecology", {
+		seed,
+		params,
+		rx,
+		ry,
+	});
+}
+
+export function generateChunkEcology(
+	seed: number,
+	params: TerrainParams,
+	rx: number,
+	ry: number,
+	cx: number,
+	cy: number,
+) {
+	assertTauri();
+	return invoke<ChunkEcologyMap>("generate_chunk_ecology", {
+		seed,
+		params,
+		rx,
+		ry,
+		cx,
+		cy,
+	});
 }
 
 export function generateView(

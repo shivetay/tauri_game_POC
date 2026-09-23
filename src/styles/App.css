@@ -122,6 +122,12 @@
   line-height: 1.2;
 }
 
+.biome-legend .map-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
 .biome-swatch {
   flex-shrink: 0;
   width: 14px;

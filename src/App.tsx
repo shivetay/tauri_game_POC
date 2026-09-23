@@ -7,12 +7,15 @@ import {
 } from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
 import { BiomeLegend } from "./components/Control/BiomeLegend";
+import { EcologyLegend } from "./components/Control/EcologyLegend";
 import { SettlementLegend } from "./components/Control/SettlementLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
 import { MapLoadingOverlay } from "./components/Map/MapLoadingOverlay";
 import { RegionMapView } from "./components/Map/RegionMapView";
+import { useChunkEcology } from "./hooks/useChunkEcology";
 import { useChunkMap } from "./hooks/useChunkMap";
+import { useRegionEcology } from "./hooks/useRegionEcology";
 import { useRegionMap } from "./hooks/useRegionMap";
 import { useSettlements } from "./hooks/useSettlements";
 import { useWorldMap } from "./hooks/useWorldMap";
@@ -32,6 +35,7 @@ function App() {
 
 	const { grid, loading, error } = useWorldMap(seed, terrainParams);
 	const regionMap = useRegionMap(seed, terrainParams, selectedRegion);
+	const regionEcology = useRegionEcology(seed, terrainParams, selectedRegion);
 	const settlementMap = useSettlements(seed, terrainParams);
 	const chunkViewBounds = useMemo(() => {
 		if (!selectedRegion || !selectedChunk) {
@@ -45,6 +49,12 @@ function App() {
 		selectedRegion,
 		selectedChunk,
 		chunkViewBounds,
+	);
+	const chunkEcology = useChunkEcology(
+		seed,
+		terrainParams,
+		selectedRegion,
+		selectedChunk,
 	);
 
 	function applySeedValue(nextSeed: number) {
@@ -78,12 +88,19 @@ function App() {
 	}
 
 	const isLoading =
-		loading || regionMap.loading || chunkMap.loading || settlementMap.loading;
+		loading ||
+		regionMap.loading ||
+		chunkMap.loading ||
+		settlementMap.loading ||
+		regionEcology.loading ||
+		chunkEcology.loading;
 	const mapLoading =
 		selectedRegion && selectedChunk
-			? chunkMap.loading || settlementMap.loading
+			? chunkMap.loading || settlementMap.loading || chunkEcology.loading
 			: selectedRegion
-				? regionMap.loading || settlementMap.loading
+				? regionMap.loading ||
+					settlementMap.loading ||
+					regionEcology.loading
 				: loading || settlementMap.loading;
 	const mapLoadingLabel =
 		selectedRegion && selectedChunk
@@ -91,6 +108,13 @@ function App() {
 			: selectedRegion
 				? "Generowanie regionu…"
 				: "Generowanie mapy świata…";
+
+	const ecologyMode =
+		selectedRegion && selectedChunk
+			? "chunk"
+			: selectedRegion
+				? "region"
+				: "hidden";
 
 	return (
 		<main className="map-screen">
@@ -106,6 +130,7 @@ function App() {
 							settlements={settlementMap.settlements}
 							roads={settlementMap.roads}
 							worldBounds={chunkViewBounds}
+							life={chunkEcology.life}
 						/>
 					) : null
 				) : selectedRegion ? (
@@ -116,6 +141,7 @@ function App() {
 						onChunkSelect={setSelectedChunk}
 						settlements={settlementMap.settlements}
 						roads={settlementMap.roads}
+						habitat={regionEcology.habitat}
 					/>
 				) : (
 					<GlobalMapView
@@ -144,7 +170,14 @@ function App() {
 				{settlementMap.error && (
 					<p className="map-error">{settlementMap.error}</p>
 				)}
+				{regionEcology.error && (
+					<p className="map-error">{regionEcology.error}</p>
+				)}
+				{chunkEcology.error && (
+					<p className="map-error">{chunkEcology.error}</p>
+				)}
 				{isLoading && <p className="map-loading">Generowanie mapy…</p>}
+				<EcologyLegend mode={ecologyMode} />
 				<SettlementLegend settlements={settlementMap.settlements} />
 				<BiomeLegend />
 			</aside>

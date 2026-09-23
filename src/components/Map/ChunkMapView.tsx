@@ -1,5 +1,6 @@
 import {
 	CHUNK_RESOLUTION,
+	type ChunkEcologyMap,
 	type ChunkId,
 	type RegionId,
 	type Road,
@@ -17,6 +18,7 @@ interface ChunkMapViewProps {
 	settlements: Settlement[];
 	roads: Road[];
 	worldBounds: WorldBounds;
+	life: ChunkEcologyMap | null;
 }
 
 export function ChunkMapView({
@@ -27,6 +29,7 @@ export function ChunkMapView({
 	settlements,
 	roads,
 	worldBounds,
+	life,
 }: ChunkMapViewProps) {
 	const cellSize = grid?.width ?? CHUNK_RESOLUTION;
 
@@ -36,9 +39,9 @@ export function ChunkMapView({
 			cellSize={cellSize}
 			showGrid={false}
 			trackCells={false}
-			idleLabel={`Obszar (${chunk.cx}, ${chunk.cy}) w regionie (${region.rx}, ${region.ry}) — maks. przybliżenie`}
+			idleLabel={`Obszar (${chunk.cx}, ${chunk.cy}) — kliknij biom/miasto lub gatunki`}
 			hoverLabel={() =>
-				`Obszar (${chunk.cx}, ${chunk.cy}) w regionie (${region.rx}, ${region.ry}) — maks. przybliżenie`
+				`Obszar (${chunk.cx}, ${chunk.cy}) w regionie (${region.rx}, ${region.ry})`
 			}
 			header={
 				<button type="button" onClick={onBack}>
@@ -49,6 +52,7 @@ export function ChunkMapView({
 			roads={roads}
 			roadDetail="close"
 			worldBounds={worldBounds}
+			life={life}
 		/>
 	);
 }

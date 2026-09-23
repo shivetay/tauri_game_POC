@@ -500,10 +500,6 @@ fn layout_districts(
     let (inner_a0, inner_span) = uneven_slices(seed, index, 50, n_inner, rot);
     let mut inner_kind = vec![DistrictKind::Residential; n_inner];
     let min_housing = if kind == SettlementKind::City { 3 } else { 2 };
-    if let Some(dir) = water_dir {
-        let i = nearest_slot(&inner_a0, &inner_span, dir);
-        convert_slot(&mut inner_kind, i, DistrictKind::Port, min_housing);
-    }
     if let Some(i) = first_residential(&inner_kind) {
         convert_slot(&mut inner_kind, i, DistrictKind::Market, min_housing);
     }
@@ -532,51 +528,46 @@ fn layout_districts(
             convert_slot(&mut inner_kind, i, DistrictKind::Temple, min_housing);
         }
     }
-    let want_inner_forest = forest_dir.is_some()
-        || unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(9))
-            < if kind == SettlementKind::City {
-                0.72
-            } else {
-                0.42
-            };
-    if want_inner_forest {
-        if let Some(i) = first_residential(&inner_kind) {
-            convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
-        }
+    // Forest park in mid ring only when woodland is actually nearby.
+    if let Some(dir) = forest_dir {
+        let i = nearest_slot(&inner_a0, &inner_span, dir);
+        convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
     }
 
     let n_outer = if kind == SettlementKind::City { 4 } else { 3 };
     let outer_rot = rot + 0.17;
     let (outer_a0, outer_span) = uneven_slices(seed, index, 80, n_outer, outer_rot);
     let mut outer_kind = vec![DistrictKind::Outskirts; n_outer];
+    // Port on the outer ring toward water — never in the civic core.
+    if let Some(dir) = water_dir {
+        place_nearest(
+            &mut outer_kind,
+            &outer_a0,
+            &outer_span,
+            dir,
+            DistrictKind::Port,
+            1,
+        );
+    }
     let forest_n = if forest_dir.is_some() {
         if kind == SettlementKind::City {
             2
         } else {
             1
         }
-    } else if unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(6))
-        < if kind == SettlementKind::City {
-            0.78
-        } else {
-            0.55
-        }
-    {
-        1
     } else {
         0
     };
-    let forest_dir_or = forest_dir.unwrap_or_else(|| {
-        unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(7)) as f32 * TAU
-    });
-    place_nearest(
-        &mut outer_kind,
-        &outer_a0,
-        &outer_span,
-        forest_dir_or,
-        DistrictKind::Forest,
-        forest_n,
-    );
+    if let Some(dir) = forest_dir {
+        place_nearest(
+            &mut outer_kind,
+            &outer_a0,
+            &outer_span,
+            dir,
+            DistrictKind::Forest,
+            forest_n,
+        );
+    }
     let leftover: usize = outer_kind
         .iter()
         .filter(|k| **k == DistrictKind::Outskirts)
@@ -824,10 +815,6 @@ fn layout_on_streets(
         SettlementKind::Town => 2,
         _ => 1,
     };
-    if let Some(dir) = water_dir {
-        let i = nearest_slot(&a0, &span, dir);
-        convert_slot(&mut inner_kind, i, DistrictKind::Port, min_housing);
-    }
     if matches!(kind, SettlementKind::City | SettlementKind::Town) {
         if let Some(i) = first_residential(&inner_kind) {
             convert_slot(&mut inner_kind, i, DistrictKind::Market, min_housing);
@@ -858,48 +845,36 @@ fn layout_on_streets(
             }
         }
     }
-    let want_inner_forest = forest_dir.is_some()
-        || unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(9))
-            < if kind == SettlementKind::City {
-                0.72
-            } else {
-                0.42
-            };
-    if want_inner_forest {
-        if let Some(i) = first_residential(&inner_kind) {
-            convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
-        }
+    // Mid-ring woodland only when forest is actually nearby.
+    if let Some(dir) = forest_dir {
+        let i = nearest_slot(&a0, &span, dir);
+        convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
     }
 
     let mut outer_kind = vec![DistrictKind::Outskirts; n];
+    // Port on the outer ring toward water — never in the civic core.
+    if let Some(dir) = water_dir {
+        place_nearest(&mut outer_kind, &a0, &span, dir, DistrictKind::Port, 1);
+    }
     let forest_n = if forest_dir.is_some() {
         if kind == SettlementKind::City {
             2.min(n)
         } else {
             1.min(n)
         }
-    } else if unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(6))
-        < if kind == SettlementKind::City {
-            0.78
-        } else {
-            0.55
-        }
-    {
-        1.min(n)
     } else {
         0
     };
-    let forest_dir_or = forest_dir.unwrap_or_else(|| {
-        unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(7)) as f32 * TAU
-    });
-    place_nearest(
-        &mut outer_kind,
-        &a0,
-        &span,
-        forest_dir_or,
-        DistrictKind::Forest,
-        forest_n,
-    );
+    if let Some(dir) = forest_dir {
+        place_nearest(
+            &mut outer_kind,
+            &a0,
+            &span,
+            dir,
+            DistrictKind::Forest,
+            forest_n,
+        );
+    }
     if matches!(kind, SettlementKind::Village | SettlementKind::Hamlet) {
         for slot in outer_kind.iter_mut() {
             if *slot == DistrictKind::Outskirts {
@@ -907,7 +882,10 @@ fn layout_on_streets(
             }
         }
         if n >= 2 {
-            outer_kind[n - 1] = DistrictKind::Outskirts;
+            // Keep at least one true outskirts wedge unless it is Port/Forest.
+            if let Some(i) = outer_kind.iter().rposition(|k| *k == DistrictKind::Residential) {
+                outer_kind[i] = DistrictKind::Outskirts;
+            }
         }
     } else {
         let leftover: usize = outer_kind
@@ -1913,11 +1891,13 @@ mod tests {
     }
 
     fn sample_road_on_land(sampler: &TerrainSampler, road: &Road) {
+        use crate::world::river::blocks_road;
         for i in 0..road.points.len() {
             let p = &road.points[i];
             let cell = sampler.cell_at(p.x as f64, p.y as f64, LodLevel::Macro);
+            let river = sampler.river_at(p.x as f64, p.y as f64);
             assert!(
-                !is_water_biome(cell.elevation),
+                !blocks_road(cell.elevation, river.channel),
                 "road vertex in water at ({}, {})",
                 p.x,
                 p.y
@@ -1935,9 +1915,10 @@ mod tests {
                 let x = p.x + dx * t;
                 let y = p.y + dy * t;
                 let c = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
+                let river = sampler.river_at(x as f64, y as f64);
                 assert!(
-                    !is_water_biome(c.elevation),
-                    "road segment in water at ({x}, {y})"
+                    !blocks_road(c.elevation, river.channel),
+                    "road segment in ocean at ({x}, {y})"
                 );
             }
         }
@@ -2028,6 +2009,20 @@ mod tests {
         assert!(has_kind(&with_port, DistrictKind::Port));
         assert!(has_kind(&with_port, DistrictKind::Residential));
         assert!(has_kind(&with_port, DistrictKind::Noble));
+        assert!(!has_kind(&with_port, DistrictKind::Forest));
+        let port = with_port
+            .iter()
+            .find(|d| d.kind == DistrictKind::Port)
+            .expect("port district");
+        assert!(
+            port.inner >= 0.55,
+            "port should sit on the outer ring, got inner={}",
+            port.inner
+        );
+
+        let (_, _, bare) = layout_districts(6, 3, SettlementKind::City, None, None);
+        assert!(!has_kind(&bare, DistrictKind::Port));
+        assert!(!has_kind(&bare, DistrictKind::Forest));
 
         let mut saw_offset = false;
         let mut saw_centered = false;
@@ -2041,5 +2036,44 @@ mod tests {
         }
         assert!(saw_offset, "expected some civic cores off-center");
         assert!(saw_centered, "expected some civic cores in the middle");
+    }
+
+    #[test]
+    fn street_layout_port_outer_forest_requires_biome() {
+        let approaches = vec![RoadApproach {
+            angle: 0.0,
+            kind: RoadKind::Highway,
+        }];
+        let (_, _, with_port, _) = layout_on_streets(
+            6,
+            3,
+            SettlementKind::City,
+            &approaches,
+            Some(1.2),
+            None,
+        );
+        assert!(has_kind(&with_port, DistrictKind::Port));
+        assert!(!has_kind(&with_port, DistrictKind::Forest));
+        let port = with_port
+            .iter()
+            .find(|d| d.kind == DistrictKind::Port)
+            .expect("port");
+        assert!(port.inner >= 0.5, "port on outer ring, inner={}", port.inner);
+
+        let (_, _, with_forest, _) = layout_on_streets(
+            6,
+            3,
+            SettlementKind::City,
+            &approaches,
+            None,
+            Some(0.0),
+        );
+        assert!(has_kind(&with_forest, DistrictKind::Forest));
+        assert!(!has_kind(&with_forest, DistrictKind::Port));
+
+        let (_, _, bare, _) =
+            layout_on_streets(6, 3, SettlementKind::City, &approaches, None, None);
+        assert!(!has_kind(&bare, DistrictKind::Port));
+        assert!(!has_kind(&bare, DistrictKind::Forest));
     }
 }
