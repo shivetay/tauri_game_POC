@@ -1,11 +1,35 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ChunkId, RegionId, TerrainGrid } from "../types/world";
+import type {
+	ChunkId,
+	RegionId,
+	SettlementMap,
+	TerrainGrid,
+	WorldBounds,
+} from "../types/world";
 import type { TerrainParams } from "../types/terrainParams";
 import {
+	CHUNK_SIZE,
 	CHUNKS_PER_REGION,
+	MACRO_RESOLUTION,
+	REGION_SIZE,
 } from "../utils/constants";
 
-export type { ChunkId, RegionId, TerrainCell, TerrainGrid, TileType } from "../types/world";
+export type {
+	ChunkId,
+	District,
+	DistrictKind,
+	RegionId,
+	Road,
+	RoadKind,
+	RoadSurface,
+	Settlement,
+	SettlementKind,
+	SettlementMap,
+	TerrainCell,
+	TerrainGrid,
+	TileType,
+	WorldBounds,
+} from "../types/world";
 export type { TerrainParams } from "../types/terrainParams";
 export { DEFAULT_TERRAIN_PARAMS } from "../types/terrainParams";
 export {
@@ -40,23 +64,50 @@ export function generateRegion(
 	return invoke<TerrainGrid>("generate_region", { seed, params, rx, ry });
 }
 
-export function generateChunk(
+export function generateSettlements(seed: number, params: TerrainParams) {
+	assertTauri();
+	return invoke<SettlementMap>("generate_settlements", { seed, params });
+}
+
+export function generateView(
 	seed: number,
 	params: TerrainParams,
 	rx: number,
 	ry: number,
-	cx: number,
-	cy: number,
+	x0: number,
+	y0: number,
+	span: number,
 ) {
 	assertTauri();
-	return invoke<TerrainGrid>("generate_chunk", {
+	return invoke<TerrainGrid>("generate_view", {
 		seed,
 		params,
 		rx,
 		ry,
-		cx,
-		cy,
+		x0,
+		y0,
+		span,
 	});
+}
+
+export function globalWorldBounds(): WorldBounds {
+	return { x0: 0, y0: 0, span: MACRO_RESOLUTION };
+}
+
+export function regionWorldBounds(region: RegionId): WorldBounds {
+	return {
+		x0: region.rx * REGION_SIZE,
+		y0: region.ry * REGION_SIZE,
+		span: REGION_SIZE,
+	};
+}
+
+export function chunkWorldBounds(region: RegionId, chunk: ChunkId): WorldBounds {
+	return {
+		x0: region.rx * REGION_SIZE + chunk.cx * CHUNK_SIZE,
+		y0: region.ry * REGION_SIZE + chunk.cy * CHUNK_SIZE,
+		span: CHUNK_SIZE,
+	};
 }
 
 export interface GridCell {

@@ -65,29 +65,28 @@ pub fn generate_region_grid(config: WorldConfig, region: RegionId) -> TerrainGri
     }
 }
 
-pub fn generate_chunk_grid(
+pub fn generate_view_grid(
     config: WorldConfig,
     region: RegionId,
-    chunk: ChunkId,
+    world_x0: f32,
+    world_y0: f32,
+    span: f32,
 ) -> TerrainGrid {
     let sampler = TerrainSampler::new(config.clone());
     let region_bounds = RegionBounds::from_region(region, config.region_size);
-    let chunk_bounds =
-        RegionBounds::from_chunk(region, chunk, config.region_size, config.chunk_size);
     let width = config.chunk_resolution;
     let height = config.chunk_resolution;
-    let span_x = chunk_bounds.world_x1 - chunk_bounds.world_x0;
-    let span_y = chunk_bounds.world_y1 - chunk_bounds.world_y0;
+    let span = span.max(1e-3);
 
     let rows: Vec<Vec<TerrainCell>> = (0..height)
         .into_par_iter()
         .map(|y| {
             (0..width)
                 .map(|x| {
-                    let world_x = f64::from(chunk_bounds.world_x0)
-                        + (x as f64 + 0.5) / width as f64 * f64::from(span_x);
-                    let world_y = f64::from(chunk_bounds.world_y0)
-                        + (y as f64 + 0.5) / height as f64 * f64::from(span_y);
+                    let world_x = f64::from(world_x0)
+                        + (x as f64 + 0.5) / width as f64 * f64::from(span);
+                    let world_y = f64::from(world_y0)
+                        + (y as f64 + 0.5) / height as f64 * f64::from(span);
                     sampler.cell_at_region(world_x, world_y, region_bounds)
                 })
                 .collect()
@@ -101,6 +100,22 @@ pub fn generate_chunk_grid(
         height,
         cells,
     }
+}
+
+pub fn generate_chunk_grid(
+    config: WorldConfig,
+    region: RegionId,
+    chunk: ChunkId,
+) -> TerrainGrid {
+    let chunk_bounds =
+        RegionBounds::from_chunk(region, chunk, config.region_size, config.chunk_size);
+    generate_view_grid(
+        config,
+        region,
+        chunk_bounds.world_x0,
+        chunk_bounds.world_y0,
+        chunk_bounds.world_x1 - chunk_bounds.world_x0,
+    )
 }
 
 #[cfg(test)]

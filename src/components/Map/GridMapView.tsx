@@ -1,11 +1,20 @@
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import type { GridCell, TerrainGrid } from "../../api/world";
+import type { GridCell, Road, Settlement, TerrainGrid, WorldBounds } from "../../api/world";
 import { canvasClientToPixel, pixelToCell } from "../../api/world";
 import {
 	drawCellHighlight,
 	drawRegionGrid,
 	terrainGridToImageData,
 } from "../../map/render";
+import {
+	drawRoads,
+	drawSettlements,
+	formatSettlementLabel,
+	hitSettlement,
+	type RoadDetail,
+	type SettlementDrawStyle,
+	type SettlementHit,
+} from "../../map/settlements";
 
 interface GridMapViewProps {
 	grid: TerrainGrid | null;
@@ -14,6 +23,13 @@ interface GridMapViewProps {
 	hoverLabel: (cell: GridCell) => string;
 	onCellSelect?: (cell: GridCell) => void;
 	header?: ReactNode;
+	showGrid?: boolean;
+	trackCells?: boolean;
+	settlements?: Settlement[];
+	roads?: Road[];
+	roadDetail?: RoadDetail;
+	worldBounds?: WorldBounds;
+	settlementStyle?: SettlementDrawStyle;
 }
 
 export function GridMapView({
@@ -23,14 +39,23 @@ export function GridMapView({
 	hoverLabel,
 	onCellSelect,
 	header,
+	showGrid = true,
+	trackCells = true,
+	settlements = [],
+	roads = [],
+	roadDetail = "region",
+	worldBounds,
+	settlementStyle = "plan",
 }: GridMapViewProps) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
 	const hoverRef = useRef<GridCell | null>(null);
+	const settlementHoverRef = useRef<SettlementHit | null>(null);
 	const [hoveredCell, setHoveredCell] = useState<GridCell | null>(null);
+	const [hoveredHit, setHoveredHit] = useState<SettlementHit | null>(null);
 
 	const paint = useCallback(
-		(hover: GridCell | null) => {
+		(hover: GridCell | null, settlementHover: SettlementHit | null) => {
 			const canvas = canvasRef.current;
 			const base = baseCanvasRef.current;
 			if (!canvas || !base) return;
@@ -39,12 +64,38 @@ export function GridMapView({
 			if (!ctx) return;
 
 			ctx.drawImage(base, 0, 0);
-			drawRegionGrid(ctx, canvas.width, canvas.height, cellSize);
-			if (hover) {
+			if (showGrid) {
+				drawRegionGrid(ctx, canvas.width, canvas.height, cellSize);
+			}
+			if (hover && trackCells) {
 				drawCellHighlight(ctx, hover.cx, hover.cy, cellSize);
 			}
+			if (worldBounds) {
+				if (roads.length > 0) {
+					drawRoads(
+						ctx,
+						canvas.width,
+						canvas.height,
+						roads,
+						worldBounds,
+						roadDetail,
+					);
+				}
+				if (settlements.length > 0) {
+					drawSettlements(
+						ctx,
+						canvas.width,
+						canvas.height,
+						settlements,
+						worldBounds,
+						settlementHover,
+						settlementStyle,
+						grid,
+					);
+				}
+			}
 		},
-		[cellSize],
+		[cellSize, grid, roadDetail, roads, settlements, settlementStyle, showGrid, trackCells, worldBounds],
 	);
 
 	useEffect(() => {
@@ -63,47 +114,82 @@ export function GridMapView({
 		baseCtx.putImageData(terrainGridToImageData(grid), 0, 0);
 		baseCanvasRef.current = base;
 		hoverRef.current = null;
+		settlementHoverRef.current = null;
 		setHoveredCell(null);
-		paint(null);
+		setHoveredHit(null);
+		paint(null, null);
 	}, [grid, paint]);
 
-	function pointerToCell(e: MouseEvent<HTMLCanvasElement>): GridCell | null {
+	function pointerInfo(e: MouseEvent<HTMLCanvasElement>): {
+		cell: GridCell | null;
+		hit: SettlementHit | null;
+	} {
 		const canvas = canvasRef.current;
-		if (!canvas) return null;
+		if (!canvas) return { cell: null, hit: null };
 
 		const pixel = canvasClientToPixel(e.clientX, e.clientY, canvas);
-		if (!pixel) return null;
+		if (!pixel) return { cell: null, hit: null };
 
-		return pixelToCell(
-			pixel.px,
-			pixel.py,
-			canvas.width,
-			canvas.height,
-			cellSize,
-		);
+		const hit =
+			worldBounds && settlements.length > 0
+				? hitSettlement(
+						pixel.px,
+						pixel.py,
+						canvas.width,
+						canvas.height,
+						settlements,
+						worldBounds,
+						settlementStyle,
+					)
+				: null;
+		const cell = trackCells
+			? pixelToCell(
+					pixel.px,
+					pixel.py,
+					canvas.width,
+					canvas.height,
+					cellSize,
+				)
+			: null;
+
+		return { cell, hit };
 	}
 
 	function clearHover() {
-		if (!hoverRef.current) return;
+		if (!hoverRef.current && !settlementHoverRef.current) return;
 
 		hoverRef.current = null;
+		settlementHoverRef.current = null;
 		setHoveredCell(null);
-		paint(null);
+		setHoveredHit(null);
+		paint(null, null);
 	}
 
 	function handleMouseMove(e: MouseEvent<HTMLCanvasElement>) {
-		const cell = pointerToCell(e);
-		if (!cell) {
+		const { cell, hit } = pointerInfo(e);
+		if (!cell && !hit) {
 			clearHover();
 			return;
 		}
 
-		const prev = hoverRef.current;
-		if (prev?.cx === cell.cx && prev?.cy === cell.cy) return;
+		const prevCell = hoverRef.current;
+		const prevHit = settlementHoverRef.current;
+		const sameCell =
+			(prevCell?.cx === cell?.cx && prevCell?.cy === cell?.cy) ||
+			(!prevCell && !cell);
+		const sameHit =
+			prevHit?.settlement.x === hit?.settlement.x &&
+			prevHit?.settlement.y === hit?.settlement.y &&
+			prevHit?.settlement.kind === hit?.settlement.kind &&
+			prevHit?.district?.name === hit?.district?.name;
+
+		if (sameCell && sameHit) return;
 
 		hoverRef.current = cell;
+		settlementHoverRef.current = hit;
 		setHoveredCell(cell);
-		paint(cell);
+		setHoveredHit(hit);
+		paint(cell, hit);
 	}
 
 	function handleMouseLeave() {
@@ -111,15 +197,21 @@ export function GridMapView({
 	}
 
 	function handleClick(e: MouseEvent<HTMLCanvasElement>) {
-		const cell = pointerToCell(e);
+		const { cell } = pointerInfo(e);
 		if (cell) onCellSelect?.(cell);
 	}
+
+	const status = hoveredHit
+		? formatSettlementLabel(hoveredHit.settlement, hoveredHit.district)
+		: hoveredCell
+			? hoverLabel(hoveredCell)
+			: idleLabel;
 
 	return (
 		<div className="map-view">
 			<div className="map-view-header">
 				{header}
-				<p>{hoveredCell ? hoverLabel(hoveredCell) : idleLabel}</p>
+				<p>{status}</p>
 			</div>
 			<canvas
 				ref={canvasRef}

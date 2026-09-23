@@ -1,7 +1,10 @@
 import {
 	CHUNKS_PER_REGION,
+	regionWorldBounds,
 	type ChunkId,
 	type RegionId,
+	type Road,
+	type Settlement,
 	type TerrainGrid,
 } from "../../api/world";
 import { GridMapView } from "./GridMapView";
@@ -11,6 +14,8 @@ interface RegionMapViewProps {
 	grid: TerrainGrid | null;
 	onBack: () => void;
 	onChunkSelect: (chunk: ChunkId) => void;
+	settlements: Settlement[];
+	roads: Road[];
 }
 
 export function RegionMapView({
@@ -18,6 +23,8 @@ export function RegionMapView({
 	grid,
 	onBack,
 	onChunkSelect,
+	settlements,
+	roads,
 }: RegionMapViewProps) {
 	const cellSize = grid ? grid.width / CHUNKS_PER_REGION : 64;
 
@@ -35,6 +42,10 @@ export function RegionMapView({
 					← Mapa świata
 				</button>
 			}
+			settlements={settlements}
+			roads={roads}
+			roadDetail="region"
+			worldBounds={regionWorldBounds(region)}
 		/>
 	);
 }

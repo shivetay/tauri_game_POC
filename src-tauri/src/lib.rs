@@ -3,7 +3,10 @@ mod world;
 use std::sync::Mutex;
 use tauri::State;
 use world::config::{TerrainGenParams, WorldConfig};
-use world::grid::{generate_chunk_grid, generate_global_grid, generate_region_grid};
+use world::grid::{
+    generate_chunk_grid, generate_global_grid, generate_region_grid, generate_view_grid,
+};
+use world::settlement::{generate as generate_settlement_map, SettlementMap};
 use world::types::{ChunkId, RegionId, TerrainGrid};
 
 struct WorldState {
@@ -69,12 +72,42 @@ fn generate_chunk(
     )
 }
 
+#[tauri::command]
+fn generate_view(
+    seed: u64,
+    params: TerrainGenParams,
+    rx: u32,
+    ry: u32,
+    x0: f32,
+    y0: f32,
+    span: f32,
+) -> TerrainGrid {
+    generate_view_grid(
+        config_with(seed, params),
+        RegionId { rx, ry },
+        x0,
+        y0,
+        span,
+    )
+}
+
+#[tauri::command]
+fn generate_settlements(seed: u64, params: TerrainGenParams) -> SettlementMap {
+    generate_settlement_map(config_with(seed, params))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(WorldState::default()))
-        .invoke_handler(tauri::generate_handler![generate_global, generate_region, generate_chunk])
+        .invoke_handler(tauri::generate_handler![
+            generate_global,
+            generate_region,
+            generate_chunk,
+            generate_view,
+            generate_settlements
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

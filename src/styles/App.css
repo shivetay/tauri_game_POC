@@ -101,6 +101,10 @@
   text-align: left;
 }
 
+.biome-legend h2:not(:first-child) {
+  margin-top: 0.85rem;
+}
+
 .biome-legend ul {
   list-style: none;
   margin: 0;
@@ -124,6 +128,16 @@
   height: 14px;
   border: 1px solid rgba(0, 0, 0, 0.25);
   border-radius: 2px;
+}
+
+.settlement-swatch {
+  border-radius: 2px;
+}
+
+.road-swatch {
+  height: 3px;
+  align-self: center;
+  border-radius: 1px;
 }
 
 .logo.vite:hover {

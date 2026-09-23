@@ -1,39 +1,54 @@
-import { useEffect, useRef } from "react";
-import type { ChunkId, RegionId, TerrainGrid } from "../../api/world";
-import { terrainGridToImageData } from "../../map/render";
+import {
+	CHUNK_RESOLUTION,
+	type ChunkId,
+	type RegionId,
+	type Road,
+	type Settlement,
+	type TerrainGrid,
+	type WorldBounds,
+} from "../../api/world";
+import { GridMapView } from "./GridMapView";
 
 interface ChunkMapViewProps {
 	region: RegionId;
 	chunk: ChunkId;
 	grid: TerrainGrid | null;
 	onBack: () => void;
+	settlements: Settlement[];
+	roads: Road[];
+	worldBounds: WorldBounds;
 }
 
-export function ChunkMapView({ region, chunk, grid, onBack }: ChunkMapViewProps) {
-	const canvasRef = useRef<HTMLCanvasElement>(null);
-
-	useEffect(() => {
-		if (!grid || !canvasRef.current) return;
-		const ctx = canvasRef.current.getContext("2d");
-		if (!ctx) return;
-		const imageData = terrainGridToImageData(grid);
-		canvasRef.current.width = grid.width;
-		canvasRef.current.height = grid.height;
-		ctx.putImageData(imageData, 0, 0);
-	}, [grid]);
+export function ChunkMapView({
+	region,
+	chunk,
+	grid,
+	onBack,
+	settlements,
+	roads,
+	worldBounds,
+}: ChunkMapViewProps) {
+	const cellSize = grid?.width ?? CHUNK_RESOLUTION;
 
 	return (
-		<div className="map-view">
-			<div className="map-view-header">
+		<GridMapView
+			grid={grid}
+			cellSize={cellSize}
+			showGrid={false}
+			trackCells={false}
+			idleLabel={`Obszar (${chunk.cx}, ${chunk.cy}) w regionie (${region.rx}, ${region.ry}) — maks. przybliżenie`}
+			hoverLabel={() =>
+				`Obszar (${chunk.cx}, ${chunk.cy}) w regionie (${region.rx}, ${region.ry}) — maks. przybliżenie`
+			}
+			header={
 				<button type="button" onClick={onBack}>
 					← Region ({region.rx}, {region.ry})
 				</button>
-				<p>
-					Obszar ({chunk.cx}, {chunk.cy}) w regionie ({region.rx}, {region.ry}) — maks.
-					przybliżenie
-				</p>
-			</div>
-			<canvas ref={canvasRef} className="map-canvas" />
-		</div>
+			}
+			settlements={settlements}
+			roads={roads}
+			roadDetail="close"
+			worldBounds={worldBounds}
+		/>
 	);
 }

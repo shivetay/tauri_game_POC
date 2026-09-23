@@ -1,17 +1,20 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ChunkId, RegionId } from "./api/world";
 import {
+	chunkWorldBounds,
 	DEFAULT_TERRAIN_PARAMS,
 	type TerrainParams,
 } from "./api/world";
 import { SeedControl } from "./components/Control/SeedControl";
 import { BiomeLegend } from "./components/Control/BiomeLegend";
+import { SettlementLegend } from "./components/Control/SettlementLegend";
 import { ChunkMapView } from "./components/Map/ChunkMapView";
 import { GlobalMapView } from "./components/Map/GlobalMapView";
 import { MapLoadingOverlay } from "./components/Map/MapLoadingOverlay";
 import { RegionMapView } from "./components/Map/RegionMapView";
 import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
+import { useSettlements } from "./hooks/useSettlements";
 import { useWorldMap } from "./hooks/useWorldMap";
 import "./styles/MapScreen.css";
 import "./styles/App.css";
@@ -29,11 +32,19 @@ function App() {
 
 	const { grid, loading, error } = useWorldMap(seed, terrainParams);
 	const regionMap = useRegionMap(seed, terrainParams, selectedRegion);
+	const settlementMap = useSettlements(seed, terrainParams);
+	const chunkViewBounds = useMemo(() => {
+		if (!selectedRegion || !selectedChunk) {
+			return null;
+		}
+		return chunkWorldBounds(selectedRegion, selectedChunk);
+	}, [selectedRegion, selectedChunk]);
 	const chunkMap = useChunkMap(
 		seed,
 		terrainParams,
 		selectedRegion,
 		selectedChunk,
+		chunkViewBounds,
 	);
 
 	function applySeedValue(nextSeed: number) {
@@ -66,13 +77,14 @@ function App() {
 		setSelectedChunk(null);
 	}
 
-	const isLoading = loading || regionMap.loading || chunkMap.loading;
+	const isLoading =
+		loading || regionMap.loading || chunkMap.loading || settlementMap.loading;
 	const mapLoading =
 		selectedRegion && selectedChunk
-			? chunkMap.loading
+			? chunkMap.loading || settlementMap.loading
 			: selectedRegion
-				? regionMap.loading
-				: loading;
+				? regionMap.loading || settlementMap.loading
+				: loading || settlementMap.loading;
 	const mapLoadingLabel =
 		selectedRegion && selectedChunk
 			? "Generowanie obszaru…"
@@ -85,21 +97,33 @@ function App() {
 			<div className="map-area">
 				{mapLoading && <MapLoadingOverlay label={mapLoadingLabel} />}
 				{selectedRegion && selectedChunk ? (
-					<ChunkMapView
-						region={selectedRegion}
-						chunk={selectedChunk}
-						grid={chunkMap.grid}
-						onBack={() => setSelectedChunk(null)}
-					/>
+					chunkViewBounds ? (
+						<ChunkMapView
+							region={selectedRegion}
+							chunk={selectedChunk}
+							grid={chunkMap.grid}
+							onBack={() => setSelectedChunk(null)}
+							settlements={settlementMap.settlements}
+							roads={settlementMap.roads}
+							worldBounds={chunkViewBounds}
+						/>
+					) : null
 				) : selectedRegion ? (
 					<RegionMapView
 						region={selectedRegion}
 						grid={regionMap.grid}
 						onBack={() => setSelectedRegion(null)}
 						onChunkSelect={setSelectedChunk}
+						settlements={settlementMap.settlements}
+						roads={settlementMap.roads}
 					/>
 				) : (
-					<GlobalMapView grid={grid} onRegionSelect={selectRegion} />
+					<GlobalMapView
+						grid={grid}
+						onRegionSelect={selectRegion}
+						settlements={settlementMap.settlements}
+						roads={settlementMap.roads}
+					/>
 				)}
 			</div>
 
@@ -117,7 +141,11 @@ function App() {
 				{error && <p className="map-error">{error}</p>}
 				{regionMap.error && <p className="map-error">{regionMap.error}</p>}
 				{chunkMap.error && <p className="map-error">{chunkMap.error}</p>}
+				{settlementMap.error && (
+					<p className="map-error">{settlementMap.error}</p>
+				)}
 				{isLoading && <p className="map-loading">Generowanie mapy…</p>}
+				<SettlementLegend settlements={settlementMap.settlements} />
 				<BiomeLegend />
 			</aside>
 		</main>

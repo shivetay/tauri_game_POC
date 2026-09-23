@@ -1,13 +1,31 @@
-import { CHUNKS_PER_REGION, type RegionId, type TerrainGrid } from "../../api/world";
+import {
+	CHUNKS_PER_REGION,
+	globalWorldBounds,
+	type RegionId,
+	type Road,
+	type Settlement,
+	type TerrainGrid,
+} from "../../api/world";
 import { GridMapView } from "./GridMapView";
 
 interface GlobalMapViewProps {
 	grid: TerrainGrid | null;
 	onRegionSelect: (region: RegionId) => void;
+	settlements: Settlement[];
+	roads: Road[];
 }
 
-export function GlobalMapView({ grid, onRegionSelect }: GlobalMapViewProps) {
+export function GlobalMapView({
+	grid,
+	onRegionSelect,
+	settlements,
+	roads,
+}: GlobalMapViewProps) {
 	const cellSize = grid ? grid.width / CHUNKS_PER_REGION : 64;
+	const overview = settlements.filter(
+		(settlement) =>
+			settlement.kind === "City" || settlement.kind === "Town",
+	);
 
 	return (
 		<GridMapView
@@ -18,6 +36,11 @@ export function GlobalMapView({ grid, onRegionSelect }: GlobalMapViewProps) {
 				`Region (${cell.cx}, ${cell.cy}) — kliknij, aby powiększyć`
 			}
 			onCellSelect={(cell) => onRegionSelect({ rx: cell.cx, ry: cell.cy })}
+			settlements={overview}
+			roads={roads}
+			roadDetail="main"
+			worldBounds={globalWorldBounds()}
+			settlementStyle="marker"
 		/>
 	);
 }
