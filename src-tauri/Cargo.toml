@@ -19,3 +19,4 @@ egui = "0.31"
 noise = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
+tiny-skia = "0.11"

@@ -16,11 +16,16 @@ use crate::settlements_draw::{
 };
 use crate::world::config::{TerrainGenParams, WorldConfig};
 use crate::world::ecology::{
-    generate_chunk_ecology, generate_region_ecology, ChunkEcologyMap, RegionEcologyMap,
+    generate_chunk_ecology_sampled, generate_region_ecology_sampled, ChunkEcologyMap,
+    RegionEcologyMap,
 };
-use crate::world::grid::{generate_global_grid, generate_region_grid, generate_view_grid};
+use crate::world::grid::{
+    generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
+};
+use crate::world::sampler::TerrainSampler;
 use crate::world::settlement::{
-    generate as generate_settlements, Road, Settlement, SettlementKind, SettlementMap,
+    generate_sampled as generate_settlements_sampled, Road, Settlement, SettlementKind,
+    SettlementMap,
 };
 use crate::world::types::{ChunkId, RegionId, TerrainGrid, TileType};
 
@@ -97,6 +102,51 @@ struct GenResult {
     life: Option<ChunkEcologyMap>,
 }
 
+/// Cached terrain view for one LOD — avoids regenerating on zoom/back.
+#[derive(Clone)]
+struct LodView {
+    grid: TerrainGrid,
+    habitat: Option<RegionEcologyMap>,
+    life: Option<ChunkEcologyMap>,
+}
+
+#[derive(Default)]
+struct LodCache {
+    global: Option<LodView>,
+    region: Option<(RegionId, LodView)>,
+    chunk: Option<(RegionId, ChunkId, LodView)>,
+}
+
+impl LodCache {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn store(&mut self, lod: LodLevel, view: LodView) {
+        match lod {
+            LodLevel::Global => self.global = Some(view),
+            LodLevel::Region(region) => self.region = Some((region, view)),
+            LodLevel::Chunk { region, chunk } => self.chunk = Some((region, chunk, view)),
+        }
+    }
+
+    fn get(&self, lod: LodLevel) -> Option<&LodView> {
+        match lod {
+            LodLevel::Global => self.global.as_ref(),
+            LodLevel::Region(region) => self
+                .region
+                .as_ref()
+                .filter(|(r, _)| *r == region)
+                .map(|(_, v)| v),
+            LodLevel::Chunk { region, chunk } => self
+                .chunk
+                .as_ref()
+                .filter(|(r, c, _)| *r == region && *c == chunk)
+                .map(|(_, _, v)| v),
+        }
+    }
+}
+
 pub struct MapApp {
     seed: u64,
     draft_seed: String,
@@ -114,6 +164,7 @@ pub struct MapApp {
     selected_hit: Option<SettlementHit>,
     loading: bool,
     request_id: u64,
+    lod_cache: LodCache,
     tx: Sender<GenRequest>,
     rx: Receiver<GenResult>,
 }
@@ -152,6 +203,7 @@ impl MapApp {
             selected_hit: None,
             loading: false,
             request_id: 0,
+            lod_cache: LodCache::default(),
             tx: tx_req,
             rx: rx_res,
         };
@@ -166,7 +218,42 @@ impl MapApp {
         config
     }
 
+    fn current_view(&self) -> Option<LodView> {
+        Some(LodView {
+            grid: self.grid.clone()?,
+            habitat: self.habitat.clone(),
+            life: self.life.clone(),
+        })
+    }
+
+    fn apply_view(&mut self, lod: LodLevel, view: LodView, ctx: &egui::Context) {
+        self.lod = lod;
+        self.grid = Some(view.grid);
+        self.habitat = view.habitat;
+        self.life = view.life;
+        self.loading = false;
+        self.selected_info = None;
+        self.selected_hit = None;
+        self.rebuild_texture(ctx);
+    }
+
+    /// Zoom / back: reuse cached LOD when possible; otherwise generate.
+    fn set_lod(&mut self, lod: LodLevel, ctx: &egui::Context) {
+        if let Some(view) = self.current_view() {
+            self.lod_cache.store(self.lod, view);
+        }
+        if let Some(view) = self.lod_cache.get(lod).cloned() {
+            self.apply_view(lod, view, ctx);
+            return;
+        }
+        self.lod = lod;
+        self.queue_generate(false);
+    }
+
     fn queue_generate(&mut self, refresh_settlements: bool) {
+        if refresh_settlements {
+            self.lod_cache.clear();
+        }
         self.request_id += 1;
         self.loading = true;
         self.selected_info = None;
@@ -209,13 +296,13 @@ impl MapApp {
         self.queue_generate(true);
     }
 
-    fn go_back(&mut self) {
-        self.lod = match self.lod {
+    fn go_back(&mut self, ctx: &egui::Context) {
+        let next = match self.lod {
             LodLevel::Chunk { region, .. } => LodLevel::Region(region),
             LodLevel::Region(_) => LodLevel::Global,
             LodLevel::Global => return,
         };
-        self.queue_generate(false);
+        self.set_lod(next, ctx);
     }
 
     fn view_settlements(&self) -> Vec<Settlement> {
@@ -287,10 +374,16 @@ impl MapApp {
             }
         }
         if let Some(result) = got {
-            self.grid = Some(result.grid);
+            let view = LodView {
+                grid: result.grid,
+                habitat: result.habitat,
+                life: result.life,
+            };
+            self.lod_cache.store(result.lod, view.clone());
+            self.grid = Some(view.grid);
             self.settlements = Some(result.settlements);
-            self.habitat = result.habitat;
-            self.life = result.life;
+            self.habitat = view.habitat;
+            self.life = view.life;
             self.lod = result.lod;
             self.seed = result.seed;
             self.loading = false;
@@ -480,12 +573,9 @@ impl MapApp {
     }
 
     fn handle_map_click(&mut self, ctx: &egui::Context, pixel: (f32, f32), canvas: (f32, f32)) {
-        if self.loading {
+        if self.loading || self.grid.is_none() {
             return;
         }
-        let Some(grid) = &self.grid else {
-            return;
-        };
         let config = self.config();
         let bounds = self.lod.bounds(&config);
         let settlements = self.view_settlements();
@@ -518,23 +608,27 @@ impl MapApp {
 
         match self.lod {
             LodLevel::Global => {
-                self.lod = LodLevel::Region(RegionId { rx: cx, ry: cy });
-                self.queue_generate(false);
+                self.set_lod(LodLevel::Region(RegionId { rx: cx, ry: cy }), ctx);
             }
             LodLevel::Region(region) => {
-                self.lod = LodLevel::Chunk {
-                    region,
-                    chunk: ChunkId { cx, cy },
-                };
-                self.queue_generate(false);
+                self.set_lod(
+                    LodLevel::Chunk {
+                        region,
+                        chunk: ChunkId { cx, cy },
+                    },
+                    ctx,
+                );
             }
             LodLevel::Chunk { .. } => {
                 let mut parts = Vec::new();
-                if let Some(biome) = biome_at_pixel(grid, px, py, cw, ch) {
-                    parts.push(format!("Biom: {}", biome_label(biome)));
+                if let Some(grid) = &self.grid {
+                    if let Some(biome) = biome_at_pixel(grid, px, py, cw, ch) {
+                        parts.push(format!("Biom: {}", biome_label(biome)));
+                    }
                 }
                 if let Some(life) = &self.life {
-                    if let Some(hint) = life_area_summary(life, cw as usize, ch as usize, px, py, &bounds)
+                    if let Some(hint) =
+                        life_area_summary(life, cw as usize, ch as usize, px, py, &bounds)
                     {
                         parts.push(hint);
                     }
@@ -557,7 +651,7 @@ impl MapApp {
                     .add_enabled(!self.loading, egui::Button::new(back))
                     .clicked()
                 {
-                    self.go_back();
+                    self.go_back(ctx);
                 }
             }
             let status = self
@@ -649,15 +743,17 @@ fn generate_job(req: GenRequest) -> GenResult {
     config.seed = req.seed;
     req.params.apply_to(&mut config);
 
+    let sampler = TerrainSampler::new(config.clone());
+
     let settlements = req
         .settlements
-        .unwrap_or_else(|| generate_settlements(config.clone()));
+        .unwrap_or_else(|| generate_settlements_sampled(&sampler));
 
     let (grid, habitat, life) = match req.lod {
-        LodLevel::Global => (generate_global_grid(config.clone()), None, None),
+        LodLevel::Global => (generate_global_grid_sampled(&sampler), None, None),
         LodLevel::Region(region) => (
-            generate_region_grid(config.clone(), region),
-            Some(generate_region_ecology(config.clone(), region)),
+            generate_region_grid_sampled(&sampler, region),
+            Some(generate_region_ecology_sampled(&sampler, region)),
             None,
         ),
         LodLevel::Chunk { region, chunk } => {
@@ -666,9 +762,15 @@ fn generate_job(req: GenRequest) -> GenResult {
             let y0 = region.ry as f32 * config.region_size as f32
                 + chunk.cy as f32 * config.chunk_size as f32;
             (
-                generate_view_grid(config.clone(), region, x0, y0, config.chunk_size as f32),
+                generate_view_grid_sampled(
+                    &sampler,
+                    region,
+                    x0,
+                    y0,
+                    config.chunk_size as f32,
+                ),
                 None,
-                Some(generate_chunk_ecology(config.clone(), region, chunk)),
+                Some(generate_chunk_ecology_sampled(&sampler, region, chunk)),
             )
         }
     };

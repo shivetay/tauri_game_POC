@@ -182,20 +182,33 @@ impl TerrainSampler {
         (d / margin).clamp(0.0, 1.0) as f32
     }
 
-    /// Elewacja micro z blendem na brzegu regionu
-    pub fn elevation_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> f32 {
+    pub fn config(&self) -> &WorldConfig {
+        &self.config
+    }
+
+    /// Region elevation (m) and the Macro norm used for sea-class gating.
+    fn elevation_and_macro_at_region(
+        &self,
+        world_x: f64,
+        world_y: f64,
+        bounds: RegionBounds,
+    ) -> (f32, f32) {
         let macro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Macro);
         let micro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Micro);
         let blend = self.region_edge_blend(world_x, world_y, bounds);
         let norm = preserve_macro_sea_class(macro_n, macro_n + (micro_n - macro_n) * blend);
-        norm_to_meters(norm)
+        (norm_to_meters(norm), macro_n)
+    }
+
+    /// Elewacja micro z blendem na brzegu regionu
+    pub fn elevation_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> f32 {
+        self.elevation_and_macro_at_region(world_x, world_y, bounds).0
     }
 
     pub fn cell_at_region(&self, world_x: f64, world_y: f64, bounds: RegionBounds) -> TerrainCell {
-        let base_elev = self.elevation_at_region(world_x, world_y, bounds);
+        let (base_elev, macro_n) = self.elevation_and_macro_at_region(world_x, world_y, bounds);
         let base_moist = self.moisture_at(world_x, world_y);
         // Only carve when macro land — avoids flipping ocean cells via river noise.
-        let macro_n = self.elevation_norm_at(world_x, world_y, LodLevel::Macro);
         let (elevation, moisture) = if macro_n >= SEA_LEVEL_NORM {
             self.apply_river(world_x, world_y, base_elev, base_moist)
         } else {
