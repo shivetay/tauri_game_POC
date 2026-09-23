@@ -77,6 +77,8 @@ export type RoadKind = "Highway" | "Secondary" | "Local";
 
 export type RoadSurface = "Paved" | "Packed" | "Dirt";
 
+export type RoadCrossing = "Bridge";
+
 export interface RoadApproach {
 	angle: number;
 	kind: RoadKind;
@@ -92,6 +94,7 @@ export interface Street {
 export interface RoadPoint {
 	x: number;
 	y: number;
+	crossing?: RoadCrossing;
 }
 
 export interface Road {

@@ -137,6 +137,7 @@ export function GridMapView({
 						roads,
 						worldBounds,
 						roadDetail,
+						grid,
 					);
 				}
 				if (settlements.length > 0) {

@@ -8,9 +8,7 @@ use crate::world::elevation::{
 use crate::world::noise::{clamp01, fbm, lerp, redistribute, smoothstep};
 use crate::world::prng::{derive_seed, hash_seed};
 use crate::world::ridge::orogeny_delta;
-use crate::world::river::{
-    river_sample, RiverSample, RIVER_CHANNEL_ELEV_M, RIVER_MOISTURE_BOOST,
-};
+use crate::world::river::{RiverNetwork, RiverSample, RIVER_CHANNEL_ELEV_M, RIVER_MOISTURE_BOOST};
 use crate::world::shape::shape_value;
 use crate::world::types::{RegionBounds, TerrainCell, TileType};
 
@@ -22,8 +20,7 @@ pub struct TerrainSampler {
     coast_noise: SuperSimplex,
     ridge_noise: SuperSimplex,
     ridge_warp_noise: SuperSimplex,
-    river_noise: SuperSimplex,
-    river_warp_noise: SuperSimplex,
+    rivers: RiverNetwork,
 }
 
 impl TerrainSampler {
@@ -34,10 +31,8 @@ impl TerrainSampler {
         let coast_seed = derive_seed(config.seed, "coast");
         let ridge_seed = derive_seed(config.seed, "ridge");
         let ridge_warp_seed = derive_seed(config.seed, "ridge-warp");
-        let river_seed = derive_seed(config.seed, "river");
-        let river_warp_seed = derive_seed(config.seed, "river-warp");
 
-        Self {
+        let sampler = Self {
             config,
             elev_noise: SuperSimplex::new(elev_seed),
             moist_noise: SuperSimplex::new(moist_seed),
@@ -45,9 +40,16 @@ impl TerrainSampler {
             coast_noise: SuperSimplex::new(coast_seed),
             ridge_noise: SuperSimplex::new(ridge_seed),
             ridge_warp_noise: SuperSimplex::new(ridge_warp_seed),
-            river_noise: SuperSimplex::new(river_seed),
-            river_warp_noise: SuperSimplex::new(river_warp_seed),
-        }
+            rivers: RiverNetwork::empty(0.0, 0.0),
+        };
+
+        let seed = sampler.config.seed;
+        let ww = sampler.config.world_width;
+        let wh = sampler.config.world_height;
+        let rivers = RiverNetwork::build(seed, ww, wh, |x, y| {
+            sampler.elevation_at(x, y, LodLevel::Macro)
+        });
+        Self { rivers, ..sampler }
     }
 
     pub fn elevation_norm_at(&self, world_x: f64, world_y: f64, lod: LodLevel) -> f32 {
@@ -110,14 +112,12 @@ impl TerrainSampler {
         norm_to_meters(self.elevation_norm_at(world_x, world_y, lod))
     }
 
+    pub(crate) fn river_network(&self) -> &RiverNetwork {
+        &self.rivers
+    }
+
     pub(crate) fn river_at(&self, world_x: f64, world_y: f64) -> RiverSample {
-        river_sample(
-            &self.river_noise,
-            &self.river_warp_noise,
-            self.config.seed,
-            world_x,
-            world_y,
-        )
+        self.rivers.sample(world_x, world_y)
     }
 
     /// Apply river channel carve + bank moisture. Only carves when already on land.
