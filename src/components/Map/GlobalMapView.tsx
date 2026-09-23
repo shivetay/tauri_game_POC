@@ -31,7 +31,7 @@ export function GlobalMapView({
 		<GridMapView
 			grid={grid}
 			cellSize={cellSize}
-			idleLabel={`Mapa świata — siatka ${CHUNKS_PER_REGION}×${CHUNKS_PER_REGION}`}
+			idleLabel={`Mapa świata — kliknij region · kliknij miasto po info`}
 			hoverLabel={(cell) =>
 				`Region (${cell.cx}, ${cell.cy}) — kliknij, aby powiększyć`
 			}

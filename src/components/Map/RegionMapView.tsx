@@ -2,6 +2,7 @@ import {
 	CHUNKS_PER_REGION,
 	regionWorldBounds,
 	type ChunkId,
+	type RegionEcologyMap,
 	type RegionId,
 	type Road,
 	type Settlement,
@@ -16,6 +17,7 @@ interface RegionMapViewProps {
 	onChunkSelect: (chunk: ChunkId) => void;
 	settlements: Settlement[];
 	roads: Road[];
+	habitat: RegionEcologyMap | null;
 }
 
 export function RegionMapView({
@@ -25,6 +27,7 @@ export function RegionMapView({
 	onChunkSelect,
 	settlements,
 	roads,
+	habitat,
 }: RegionMapViewProps) {
 	const cellSize = grid ? grid.width / CHUNKS_PER_REGION : 64;
 
@@ -32,7 +35,7 @@ export function RegionMapView({
 		<GridMapView
 			grid={grid}
 			cellSize={cellSize}
-			idleLabel={`Region (${region.rx}, ${region.ry}) — siatka ${CHUNKS_PER_REGION}×${CHUNKS_PER_REGION}, kliknij obszar`}
+			idleLabel={`Region (${region.rx}, ${region.ry}) — kliknij obszar · kliknij miasto po info`}
 			hoverLabel={(cell) =>
 				`Obszar (${cell.cx}, ${cell.cy}) — kliknij, aby powiększyć`
 			}
@@ -46,6 +49,7 @@ export function RegionMapView({
 			roads={roads}
 			roadDetail="region"
 			worldBounds={regionWorldBounds(region)}
+			habitat={habitat}
 		/>
 	);
 }

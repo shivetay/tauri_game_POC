@@ -757,6 +757,24 @@ function drawFootprint(
 			: info.fill;
 		octx.fill();
 	}
+	// Hover outline on the overlay so punchWater clips it at the shoreline.
+	if (hovered) {
+		if (hoveredDistrict) {
+			for (const block of blocks) {
+				if (block.district?.name !== hoveredDistrict.name) continue;
+				if (block.poly.length < 3) continue;
+				tracePoly(octx, block.poly, R);
+				octx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+				octx.lineWidth = 1.4;
+				octx.stroke();
+			}
+		} else {
+			traceVerts(octx, verts);
+			octx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+			octx.lineWidth = 1.4;
+			octx.stroke();
+		}
+	}
 	octx.restore();
 	octx.setTransform(1, 0, 0, 1, 0, 0);
 	if (grid) punchWater(octx, sx - pad, sy - pad, size, size, grid);
@@ -771,26 +789,6 @@ function drawFootprint(
 	ctx.strokeStyle = "rgba(48, 32, 18, 0.4)";
 	ctx.lineWidth = 1;
 	ctx.stroke();
-	if (hovered) {
-		ctx.save();
-		traceVerts(ctx, verts);
-		ctx.clip();
-		if (hoveredDistrict) {
-			for (const block of settlementBlocks(settlement)) {
-				if (block.district?.name !== hoveredDistrict.name) continue;
-				tracePoly(ctx, block.poly, R);
-				ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-				ctx.lineWidth = 1.4;
-				ctx.stroke();
-			}
-		} else {
-			traceVerts(ctx, verts);
-			ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-			ctx.lineWidth = 1.4;
-			ctx.stroke();
-		}
-		ctx.restore();
-	}
 	ctx.restore();
 }
 
@@ -877,7 +875,93 @@ function roadLayerWidth(
 	return Math.max(0.7, scale * base * surfaceMul);
 }
 
-function paintRoadStroke(
+function paintBridgeMarks(
+	ctx: CanvasRenderingContext2D,
+	road: Road,
+	bounds: WorldBounds,
+	canvasWidth: number,
+	canvasHeight: number,
+	detail: RoadDetail,
+) {
+	const marks = road.points.filter((p) => p.crossing === "Bridge");
+	if (marks.length === 0) return;
+	const len =
+		detail === "close" ? 6.5 : detail === "region" ? 5.0 : 3.8;
+	const deck =
+		detail === "close" ? 3.2 : detail === "region" ? 2.4 : 1.8;
+	ctx.setLineDash([]);
+	for (let i = 0; i < road.points.length; i++) {
+		const p = road.points[i];
+		if (p.crossing !== "Bridge") continue;
+		const prev = road.points[Math.max(0, i - 1)];
+		const next = road.points[Math.min(road.points.length - 1, i + 1)];
+		const dx = next.x - prev.x;
+		const dy = next.y - prev.y;
+		const dist = Math.hypot(dx, dy) || 1;
+		const tx = dx / dist;
+		const ty = dy / dist;
+		const nx = -ty;
+		const ny = tx;
+		const sx = ((p.x - bounds.x0) / bounds.span) * canvasWidth;
+		const sy = ((p.y - bounds.y0) / bounds.span) * canvasHeight;
+		const along = (deck * canvasWidth) / bounds.span;
+		const across = (len * canvasWidth) / bounds.span;
+		// Deck plank along the road.
+		ctx.strokeStyle =
+			detail === "close" ? "rgba(96, 72, 40, 0.95)" : "rgba(86, 64, 36, 0.88)";
+		ctx.lineWidth = detail === "close" ? 3.2 : 2.4;
+		ctx.beginPath();
+		ctx.moveTo(sx - tx * along, sy - ty * along);
+		ctx.lineTo(sx + tx * along, sy + ty * along);
+		ctx.stroke();
+		// Cross-ties.
+		ctx.strokeStyle =
+			detail === "close" ? "rgba(42, 28, 14, 0.95)" : "rgba(40, 28, 14, 0.85)";
+		ctx.lineWidth = detail === "close" ? 2.0 : 1.5;
+		ctx.beginPath();
+		ctx.moveTo(sx - nx * across, sy - ny * across);
+		ctx.lineTo(sx + nx * across, sy + ny * across);
+		ctx.stroke();
+	}
+}
+
+function punchRoadWater(
+	overlay: CanvasRenderingContext2D,
+	ox: number,
+	oy: number,
+	width: number,
+	height: number,
+	grid: TerrainGrid,
+	bridgeCanvasPts: { x: number; y: number }[],
+) {
+	const img = overlay.getImageData(0, 0, width, height);
+	const data = img.data;
+	const keepR = 7;
+	const keepR2 = keepR * keepR;
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const i = (y * width + x) * 4;
+			if (data[i + 3] === 0) continue;
+			const biome = biomeAtCanvas(grid, ox + x, oy + y);
+			if (biome === null || !isWaterBiome(biome)) continue;
+			const cx = ox + x;
+			const cy = oy + y;
+			let nearBridge = false;
+			for (const b of bridgeCanvasPts) {
+				const dx = cx - b.x;
+				const dy = cy - b.y;
+				if (dx * dx + dy * dy <= keepR2) {
+					nearBridge = true;
+					break;
+				}
+			}
+			if (!nearBridge) data[i + 3] = 0;
+		}
+	}
+	overlay.putImageData(img, 0, 0);
+}
+
+function paintRoadStrokeOnto(
 	ctx: CanvasRenderingContext2D,
 	road: Road,
 	bounds: WorldBounds,
@@ -917,18 +1001,71 @@ export function drawRoads(
 	roads: Road[],
 	bounds: WorldBounds,
 	detail: RoadDetail,
+	grid: TerrainGrid | null = null,
 ) {
 	ctx.save();
 	ctx.lineCap = "round";
 	ctx.lineJoin = "round";
 	const order: RoadKind[] = ["Local", "Secondary", "Highway"];
-	for (const kind of order) {
-		for (const road of roads) {
-			if (road.kind !== kind) continue;
-			if (detail === "main" && road.kind !== "Highway") continue;
-			if (road.points.length < 2 || !roadInView(road.points, bounds)) continue;
-			paintRoadStroke(ctx, road, bounds, canvasWidth, canvasHeight, detail);
+	const visible = roads.filter((road) => {
+		if (detail === "main" && road.kind !== "Highway") return false;
+		return road.points.length >= 2 && roadInView(road.points, bounds);
+	});
+
+	const paintAll = (target: CanvasRenderingContext2D) => {
+		for (const kind of order) {
+			for (const road of visible) {
+				if (road.kind !== kind) continue;
+				paintRoadStrokeOnto(
+					target,
+					road,
+					bounds,
+					canvasWidth,
+					canvasHeight,
+					detail,
+				);
+			}
 		}
+	};
+
+	if (!grid) {
+		paintAll(ctx);
+		for (const road of visible) {
+			paintBridgeMarks(ctx, road, bounds, canvasWidth, canvasHeight, detail);
+		}
+		ctx.restore();
+		return;
+	}
+
+	const overlay = document.createElement("canvas");
+	overlay.width = canvasWidth;
+	overlay.height = canvasHeight;
+	const octx = overlay.getContext("2d");
+	if (!octx) {
+		paintAll(ctx);
+		for (const road of visible) {
+			paintBridgeMarks(ctx, road, bounds, canvasWidth, canvasHeight, detail);
+		}
+		ctx.restore();
+		return;
+	}
+	octx.lineCap = "round";
+	octx.lineJoin = "round";
+	paintAll(octx);
+	const bridgePts: { x: number; y: number }[] = [];
+	for (const road of visible) {
+		for (const p of road.points) {
+			if (p.crossing !== "Bridge") continue;
+			bridgePts.push({
+				x: ((p.x - bounds.x0) / bounds.span) * canvasWidth,
+				y: ((p.y - bounds.y0) / bounds.span) * canvasHeight,
+			});
+		}
+	}
+	punchRoadWater(octx, 0, 0, canvasWidth, canvasHeight, grid, bridgePts);
+	ctx.drawImage(overlay, 0, 0);
+	for (const road of visible) {
+		paintBridgeMarks(ctx, road, bounds, canvasWidth, canvasHeight, detail);
 	}
 	ctx.restore();
 }

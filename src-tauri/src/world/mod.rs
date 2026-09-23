@@ -1,11 +1,13 @@
 pub mod biome;
 pub mod config;
 pub mod delta;
+pub mod ecology;
 pub mod elevation;
 pub mod grid;
 pub mod noise;
 pub mod prng;
 pub mod ridge;
+pub mod river;
 pub mod sampler;
 pub mod settlement;
 pub mod shape;

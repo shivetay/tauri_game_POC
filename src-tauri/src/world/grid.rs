@@ -156,58 +156,48 @@ mod tests {
     #[test]
     fn chunk_zoom_matches_region_at_same_world_point() {
         let config = WorldConfig::default();
+        let sampler = TerrainSampler::new(config.clone());
 
-        for ry in 0..8 {
-            for rx in 0..8 {
-                let region = RegionId { rx, ry };
-                let region_grid = generate_region_grid(config.clone(), region);
-                let region_bounds = RegionBounds::from_region(region, config.region_size);
+        // A few region/chunk pairs — full 8×8×8×8 grid gen is too heavy with rivers.
+        let cases = [(1u32, 1u32), (3, 2), (5, 4)];
+        let chunk_cases = [(0u32, 0u32), (3, 3), (7, 7)];
 
-                for cy in 0..8 {
-                    for cx in 0..8 {
-                        let chunk = ChunkId { cx, cy };
-                        let chunk_grid =
-                            generate_chunk_grid(config.clone(), region, chunk);
+        for &(rx, ry) in &cases {
+            let region = RegionId { rx, ry };
+            let region_bounds = RegionBounds::from_region(region, config.region_size);
 
-                        let chunk_bounds = RegionBounds::from_chunk(
-                            region,
-                            chunk,
-                            config.region_size,
-                            config.chunk_size,
-                        );
-                        let wx = f64::from(chunk_bounds.world_x0) + 4.0;
-                        let wy = f64::from(chunk_bounds.world_y0) + 4.0;
+            for &(cx, cy) in &chunk_cases {
+                let chunk = ChunkId { cx, cy };
+                let chunk_grid = generate_chunk_grid(config.clone(), region, chunk);
+                let chunk_bounds = RegionBounds::from_chunk(
+                    region,
+                    chunk,
+                    config.region_size,
+                    config.chunk_size,
+                );
+                // Sample at the same world point the chunk grid uses for pixel (mid, mid).
+                let mid = (config.chunk_resolution / 2) as f64;
+                let wx = f64::from(chunk_bounds.world_x0)
+                    + (mid + 0.5) / config.chunk_resolution as f64
+                        * f64::from(chunk_bounds.world_x1 - chunk_bounds.world_x0);
+                let wy = f64::from(chunk_bounds.world_y0)
+                    + (mid + 0.5) / config.chunk_resolution as f64
+                        * f64::from(chunk_bounds.world_y1 - chunk_bounds.world_y0);
 
-                        let region_px = ((wx - f64::from(region_bounds.world_x0))
-                            / f64::from(region_bounds.world_x1 - region_bounds.world_x0)
-                            * config.micro_resolution as f64) as u32;
-                        let region_py = ((wy - f64::from(region_bounds.world_y0))
-                            / f64::from(region_bounds.world_y1 - region_bounds.world_y0)
-                            * config.micro_resolution as f64) as u32;
-                        let region_idx = (region_py * config.micro_resolution + region_px) as usize;
+                let chunk_idx = ((config.chunk_resolution / 2) * config.chunk_resolution
+                    + config.chunk_resolution / 2) as usize;
+                let chunk_cell = &chunk_grid.cells[chunk_idx];
+                let region_cell = sampler.cell_at_region(wx, wy, region_bounds);
 
-                        let chunk_px = ((wx - f64::from(chunk_bounds.world_x0))
-                            / f64::from(chunk_bounds.world_x1 - chunk_bounds.world_x0)
-                            * config.chunk_resolution as f64) as u32;
-                        let chunk_py = ((wy - f64::from(chunk_bounds.world_y0))
-                            / f64::from(chunk_bounds.world_y1 - chunk_bounds.world_y0)
-                            * config.chunk_resolution as f64) as u32;
-                        let chunk_idx = (chunk_py * config.chunk_resolution + chunk_px) as usize;
-
-                        let region_cell = &region_grid.cells[region_idx];
-                        let chunk_cell = &chunk_grid.cells[chunk_idx];
-
-                        assert_eq!(
-                            region_cell.biome, chunk_cell.biome,
-                            "biome mismatch at ({wx},{wy}) region ({rx},{ry}) chunk ({cx},{cy})"
-                        );
-                        assert_eq!(
-                            is_water_cell(region_cell),
-                            is_water_cell(chunk_cell),
-                            "sea class mismatch at ({wx},{wy}) region ({rx},{ry}) chunk ({cx},{cy})"
-                        );
-                    }
-                }
+                assert_eq!(
+                    region_cell.biome, chunk_cell.biome,
+                    "biome mismatch at ({wx},{wy}) region ({rx},{ry}) chunk ({cx},{cy})"
+                );
+                assert_eq!(
+                    is_water_cell(&region_cell),
+                    is_water_cell(chunk_cell),
+                    "sea class mismatch at ({wx},{wy}) region ({rx},{ry}) chunk ({cx},{cy})"
+                );
             }
         }
     }

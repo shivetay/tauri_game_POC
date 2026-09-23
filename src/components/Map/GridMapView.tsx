@@ -1,6 +1,29 @@
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import type { GridCell, Road, Settlement, TerrainGrid, WorldBounds } from "../../api/world";
+import {
+	type MouseEvent,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import type {
+	ChunkEcologyMap,
+	GridCell,
+	RegionEcologyMap,
+	Road,
+	Settlement,
+	TerrainGrid,
+	TileType,
+	WorldBounds,
+} from "../../api/world";
 import { canvasClientToPixel, pixelToCell } from "../../api/world";
+import { BIOMES } from "../../map/colors";
+import {
+	chunkHabitatFromLife,
+	drawHabitatOverlay,
+	lifeAreaSummary,
+	regionTileSummary,
+} from "../../map/ecology";
 import {
 	drawCellHighlight,
 	drawRegionGrid,
@@ -30,6 +53,35 @@ interface GridMapViewProps {
 	roadDetail?: RoadDetail;
 	worldBounds?: WorldBounds;
 	settlementStyle?: SettlementDrawStyle;
+	/** Region LOD: potential occurrence wash (A+B). */
+	habitat?: RegionEcologyMap | null;
+	/** Chunk LOD: color wash + species detail on click. */
+	life?: ChunkEcologyMap | null;
+}
+
+function biomeAtPixel(
+	grid: TerrainGrid,
+	px: number,
+	py: number,
+	canvasWidth: number,
+	canvasHeight: number,
+): TileType | null {
+	if (grid.width === 0 || grid.height === 0 || grid.cells.length === 0) {
+		return null;
+	}
+	const gx = Math.min(
+		grid.width - 1,
+		Math.max(0, Math.floor((px / canvasWidth) * grid.width)),
+	);
+	const gy = Math.min(
+		grid.height - 1,
+		Math.max(0, Math.floor((py / canvasHeight) * grid.height)),
+	);
+	return grid.cells[gy * grid.width + gx]?.biome ?? null;
+}
+
+function formatBiomeLabel(biome: TileType): string {
+	return `Biom: ${BIOMES[biome].label}`;
 }
 
 export function GridMapView({
@@ -46,16 +98,18 @@ export function GridMapView({
 	roadDetail = "region",
 	worldBounds,
 	settlementStyle = "plan",
+	habitat = null,
+	life = null,
 }: GridMapViewProps) {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
-	const hoverRef = useRef<GridCell | null>(null);
-	const settlementHoverRef = useRef<SettlementHit | null>(null);
-	const [hoveredCell, setHoveredCell] = useState<GridCell | null>(null);
-	const [hoveredHit, setHoveredHit] = useState<SettlementHit | null>(null);
+	const habitatCanvasRef = useRef<HTMLCanvasElement | null>(null);
+	const selectedCellRef = useRef<GridCell | null>(null);
+	const selectedHitRef = useRef<SettlementHit | null>(null);
+	const [selectedInfo, setSelectedInfo] = useState<string | null>(null);
 
 	const paint = useCallback(
-		(hover: GridCell | null, settlementHover: SettlementHit | null) => {
+		(selectedCell: GridCell | null, selectedHit: SettlementHit | null) => {
 			const canvas = canvasRef.current;
 			const base = baseCanvasRef.current;
 			if (!canvas || !base) return;
@@ -64,11 +118,15 @@ export function GridMapView({
 			if (!ctx) return;
 
 			ctx.drawImage(base, 0, 0);
+			const habitatLayer = habitatCanvasRef.current;
+			if (habitatLayer) {
+				ctx.drawImage(habitatLayer, 0, 0);
+			}
 			if (showGrid) {
 				drawRegionGrid(ctx, canvas.width, canvas.height, cellSize);
 			}
-			if (hover && trackCells) {
-				drawCellHighlight(ctx, hover.cx, hover.cy, cellSize);
+			if (selectedCell && trackCells) {
+				drawCellHighlight(ctx, selectedCell.cx, selectedCell.cy, cellSize);
 			}
 			if (worldBounds) {
 				if (roads.length > 0) {
@@ -79,6 +137,7 @@ export function GridMapView({
 						roads,
 						worldBounds,
 						roadDetail,
+						grid,
 					);
 				}
 				if (settlements.length > 0) {
@@ -88,14 +147,24 @@ export function GridMapView({
 						canvas.height,
 						settlements,
 						worldBounds,
-						settlementHover,
+						selectedHit,
 						settlementStyle,
 						grid,
 					);
 				}
 			}
 		},
-		[cellSize, grid, roadDetail, roads, settlements, settlementStyle, showGrid, trackCells, worldBounds],
+		[
+			cellSize,
+			grid,
+			roadDetail,
+			roads,
+			settlements,
+			settlementStyle,
+			showGrid,
+			trackCells,
+			worldBounds,
+		],
 	);
 
 	useEffect(() => {
@@ -113,22 +182,45 @@ export function GridMapView({
 
 		baseCtx.putImageData(terrainGridToImageData(grid), 0, 0);
 		baseCanvasRef.current = base;
-		hoverRef.current = null;
-		settlementHoverRef.current = null;
-		setHoveredCell(null);
-		setHoveredHit(null);
+
+		const wash =
+			habitat ??
+			(life && life.cells.length > 0 ? chunkHabitatFromLife(life) : null);
+		if (wash) {
+			const layer = document.createElement("canvas");
+			layer.width = grid.width;
+			layer.height = grid.height;
+			const layerCtx = layer.getContext("2d");
+			if (layerCtx) {
+				drawHabitatOverlay(layerCtx, grid.width, grid.height, wash);
+				habitatCanvasRef.current = layer;
+			} else {
+				habitatCanvasRef.current = null;
+			}
+		} else {
+			habitatCanvasRef.current = null;
+		}
+
+		selectedCellRef.current = null;
+		selectedHitRef.current = null;
+		setSelectedInfo(null);
 		paint(null, null);
-	}, [grid, paint]);
+	}, [grid, habitat, life, paint]);
 
 	function pointerInfo(e: MouseEvent<HTMLCanvasElement>): {
 		cell: GridCell | null;
 		hit: SettlementHit | null;
+		pixel: { px: number; py: number } | null;
 	} {
 		const canvas = canvasRef.current;
-		if (!canvas) return { cell: null, hit: null };
+		if (!canvas) {
+			return { cell: null, hit: null, pixel: null };
+		}
 
 		const pixel = canvasClientToPixel(e.clientX, e.clientY, canvas);
-		if (!pixel) return { cell: null, hit: null };
+		if (!pixel) {
+			return { cell: null, hit: null, pixel: null };
+		}
 
 		const hit =
 			worldBounds && settlements.length > 0
@@ -152,60 +244,84 @@ export function GridMapView({
 				)
 			: null;
 
-		return { cell, hit };
+		return { cell, hit, pixel };
 	}
 
-	function clearHover() {
-		if (!hoverRef.current && !settlementHoverRef.current) return;
-
-		hoverRef.current = null;
-		settlementHoverRef.current = null;
-		setHoveredCell(null);
-		setHoveredHit(null);
-		paint(null, null);
-	}
-
-	function handleMouseMove(e: MouseEvent<HTMLCanvasElement>) {
-		const { cell, hit } = pointerInfo(e);
-		if (!cell && !hit) {
-			clearHover();
-			return;
+	function buildClickInfo(
+		cell: GridCell | null,
+		hit: SettlementHit | null,
+		pixel: { px: number; py: number },
+		canvas: HTMLCanvasElement,
+	): string {
+		if (hit) {
+			return formatSettlementLabel(hit.settlement, hit.district);
 		}
 
-		const prevCell = hoverRef.current;
-		const prevHit = settlementHoverRef.current;
-		const sameCell =
-			(prevCell?.cx === cell?.cx && prevCell?.cy === cell?.cy) ||
-			(!prevCell && !cell);
-		const sameHit =
-			prevHit?.settlement.x === hit?.settlement.x &&
-			prevHit?.settlement.y === hit?.settlement.y &&
-			prevHit?.settlement.kind === hit?.settlement.kind &&
-			prevHit?.district?.name === hit?.district?.name;
+		const parts: string[] = [];
+		if (grid) {
+			const biome = biomeAtPixel(
+				grid,
+				pixel.px,
+				pixel.py,
+				canvas.width,
+				canvas.height,
+			);
+			if (biome) {
+				parts.push(formatBiomeLabel(biome));
+			}
+		}
 
-		if (sameCell && sameHit) return;
+		if (life && worldBounds) {
+			const lifeHint = lifeAreaSummary(
+				life,
+				canvas.width,
+				canvas.height,
+				pixel.px,
+				pixel.py,
+				worldBounds,
+			);
+			if (lifeHint) parts.push(lifeHint);
+		} else if (habitat && cell) {
+			const tileHint = regionTileSummary(habitat, cell.cx, cell.cy);
+			if (tileHint) parts.push(tileHint);
+		} else if (cell) {
+			parts.push(hoverLabel(cell));
+		}
 
-		hoverRef.current = cell;
-		settlementHoverRef.current = hit;
-		setHoveredCell(cell);
-		setHoveredHit(hit);
-		paint(cell, hit);
-	}
-
-	function handleMouseLeave() {
-		clearHover();
+		return parts.length > 0 ? parts.join(" · ") : idleLabel;
 	}
 
 	function handleClick(e: MouseEvent<HTMLCanvasElement>) {
-		const { cell } = pointerInfo(e);
-		if (cell) onCellSelect?.(cell);
+		const canvas = canvasRef.current;
+		const { cell, hit, pixel } = pointerInfo(e);
+		if (!canvas || !pixel) return;
+
+		// Settlement / place: show info, do not zoom.
+		if (hit) {
+			const info = formatSettlementLabel(hit.settlement, hit.district);
+			selectedCellRef.current = null;
+			selectedHitRef.current = hit;
+			setSelectedInfo(info);
+			paint(null, hit);
+			return;
+		}
+
+		// Navigable LOD: single click zooms (global → region → chunk).
+		if (onCellSelect && cell) {
+			onCellSelect(cell);
+			return;
+		}
+
+		// Chunk (no further zoom): biome + flora/fauna on click.
+		const info = buildClickInfo(cell, null, pixel, canvas);
+		selectedCellRef.current = cell;
+		selectedHitRef.current = null;
+		setSelectedInfo(info);
+		paint(cell, null);
 	}
 
-	const status = hoveredHit
-		? formatSettlementLabel(hoveredHit.settlement, hoveredHit.district)
-		: hoveredCell
-			? hoverLabel(hoveredCell)
-			: idleLabel;
+	const status = selectedInfo ?? idleLabel;
+	const canNavigate = Boolean(onCellSelect);
 
 	return (
 		<div className="map-view">
@@ -216,10 +332,8 @@ export function GridMapView({
 			<canvas
 				ref={canvasRef}
 				className="map-canvas"
-				onClick={onCellSelect ? handleClick : undefined}
-				onMouseMove={handleMouseMove}
-				onMouseLeave={handleMouseLeave}
-				style={{ cursor: onCellSelect ? "crosshair" : "default" }}
+				onClick={handleClick}
+				style={{ cursor: canNavigate ? "crosshair" : "default" }}
 			/>
 		</div>
 	);

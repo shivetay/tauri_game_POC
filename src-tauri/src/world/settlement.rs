@@ -19,6 +19,7 @@ const CHANNEL_LAYOUT: u64 = 45;
 #[cfg(test)]
 const CHANNEL_CORE: u64 = 46;
 const CHANNEL_ROAD: u64 = 47;
+const CHANNEL_BRIDGE: u64 = 48;
 const SCORE_FLOOR: f32 = 0.18;
 /// Villages below this population stay as a single footprint (no district zones).
 const VILLAGE_DISTRICT_POP_MIN: u32 = 500;
@@ -106,6 +107,12 @@ pub struct RoadApproach {
     pub kind: RoadKind,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum RoadCrossing {
+    Bridge,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Road {
@@ -119,6 +126,8 @@ pub struct Road {
 pub struct RoadPoint {
     pub x: f32,
     pub y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crossing: Option<RoadCrossing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,7 +224,8 @@ pub fn generate(config: WorldConfig) -> SettlementMap {
                 continue;
             }
             let cell = sampler.cell_at(x, y, LodLevel::Macro);
-            let Some(score) = site_score(&cell) else {
+            let river = sampler.river_at(x, y);
+            let Some(score) = site_score(&cell, &river) else {
                 continue;
             };
             if score < SCORE_FLOOR {
@@ -308,8 +318,8 @@ fn far_enough(x: f32, y: f32, min_d: f32, placed: &[(f32, f32)]) -> bool {
     })
 }
 
-fn site_score(cell: &TerrainCell) -> Option<f32> {
-    if is_water_biome(cell.elevation) {
+fn site_score(cell: &TerrainCell, river: &crate::world::river::RiverSample) -> Option<f32> {
+    if is_water_biome(cell.elevation) || river.channel > 0.55 {
         return None;
     }
     let biome_s = match cell.biome {
@@ -335,7 +345,8 @@ fn site_score(cell: &TerrainCell) -> Option<f32> {
         return None;
     };
     let moist_s = 1.0 - (cell.moisture - 0.4).abs() * 0.35;
-    Some(biome_s * elev_s * moist_s)
+    let river_s = 1.0 + 0.55 * river.proximity;
+    Some(biome_s * elev_s * moist_s * river_s)
 }
 
 const NAME_PREFIX: &[&str] = &[
@@ -500,10 +511,6 @@ fn layout_districts(
     let (inner_a0, inner_span) = uneven_slices(seed, index, 50, n_inner, rot);
     let mut inner_kind = vec![DistrictKind::Residential; n_inner];
     let min_housing = if kind == SettlementKind::City { 3 } else { 2 };
-    if let Some(dir) = water_dir {
-        let i = nearest_slot(&inner_a0, &inner_span, dir);
-        convert_slot(&mut inner_kind, i, DistrictKind::Port, min_housing);
-    }
     if let Some(i) = first_residential(&inner_kind) {
         convert_slot(&mut inner_kind, i, DistrictKind::Market, min_housing);
     }
@@ -532,51 +539,46 @@ fn layout_districts(
             convert_slot(&mut inner_kind, i, DistrictKind::Temple, min_housing);
         }
     }
-    let want_inner_forest = forest_dir.is_some()
-        || unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(9))
-            < if kind == SettlementKind::City {
-                0.72
-            } else {
-                0.42
-            };
-    if want_inner_forest {
-        if let Some(i) = first_residential(&inner_kind) {
-            convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
-        }
+    // Forest park in mid ring only when woodland is actually nearby.
+    if let Some(dir) = forest_dir {
+        let i = nearest_slot(&inner_a0, &inner_span, dir);
+        convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
     }
 
     let n_outer = if kind == SettlementKind::City { 4 } else { 3 };
     let outer_rot = rot + 0.17;
     let (outer_a0, outer_span) = uneven_slices(seed, index, 80, n_outer, outer_rot);
     let mut outer_kind = vec![DistrictKind::Outskirts; n_outer];
+    // Port on the outer ring toward water — never in the civic core.
+    if let Some(dir) = water_dir {
+        place_nearest(
+            &mut outer_kind,
+            &outer_a0,
+            &outer_span,
+            dir,
+            DistrictKind::Port,
+            1,
+        );
+    }
     let forest_n = if forest_dir.is_some() {
         if kind == SettlementKind::City {
             2
         } else {
             1
         }
-    } else if unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(6))
-        < if kind == SettlementKind::City {
-            0.78
-        } else {
-            0.55
-        }
-    {
-        1
     } else {
         0
     };
-    let forest_dir_or = forest_dir.unwrap_or_else(|| {
-        unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(7)) as f32 * TAU
-    });
-    place_nearest(
-        &mut outer_kind,
-        &outer_a0,
-        &outer_span,
-        forest_dir_or,
-        DistrictKind::Forest,
-        forest_n,
-    );
+    if let Some(dir) = forest_dir {
+        place_nearest(
+            &mut outer_kind,
+            &outer_a0,
+            &outer_span,
+            dir,
+            DistrictKind::Forest,
+            forest_n,
+        );
+    }
     let leftover: usize = outer_kind
         .iter()
         .filter(|k| **k == DistrictKind::Outskirts)
@@ -824,10 +826,6 @@ fn layout_on_streets(
         SettlementKind::Town => 2,
         _ => 1,
     };
-    if let Some(dir) = water_dir {
-        let i = nearest_slot(&a0, &span, dir);
-        convert_slot(&mut inner_kind, i, DistrictKind::Port, min_housing);
-    }
     if matches!(kind, SettlementKind::City | SettlementKind::Town) {
         if let Some(i) = first_residential(&inner_kind) {
             convert_slot(&mut inner_kind, i, DistrictKind::Market, min_housing);
@@ -858,48 +856,36 @@ fn layout_on_streets(
             }
         }
     }
-    let want_inner_forest = forest_dir.is_some()
-        || unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(9))
-            < if kind == SettlementKind::City {
-                0.72
-            } else {
-                0.42
-            };
-    if want_inner_forest {
-        if let Some(i) = first_residential(&inner_kind) {
-            convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
-        }
+    // Mid-ring woodland only when forest is actually nearby.
+    if let Some(dir) = forest_dir {
+        let i = nearest_slot(&a0, &span, dir);
+        convert_slot(&mut inner_kind, i, DistrictKind::Forest, min_housing);
     }
 
     let mut outer_kind = vec![DistrictKind::Outskirts; n];
+    // Port on the outer ring toward water — never in the civic core.
+    if let Some(dir) = water_dir {
+        place_nearest(&mut outer_kind, &a0, &span, dir, DistrictKind::Port, 1);
+    }
     let forest_n = if forest_dir.is_some() {
         if kind == SettlementKind::City {
             2.min(n)
         } else {
             1.min(n)
         }
-    } else if unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(6))
-        < if kind == SettlementKind::City {
-            0.78
-        } else {
-            0.55
-        }
-    {
-        1.min(n)
     } else {
         0
     };
-    let forest_dir_or = forest_dir.unwrap_or_else(|| {
-        unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(7)) as f32 * TAU
-    });
-    place_nearest(
-        &mut outer_kind,
-        &a0,
-        &span,
-        forest_dir_or,
-        DistrictKind::Forest,
-        forest_n,
-    );
+    if let Some(dir) = forest_dir {
+        place_nearest(
+            &mut outer_kind,
+            &a0,
+            &span,
+            dir,
+            DistrictKind::Forest,
+            forest_n,
+        );
+    }
     if matches!(kind, SettlementKind::Village | SettlementKind::Hamlet) {
         for slot in outer_kind.iter_mut() {
             if *slot == DistrictKind::Outskirts {
@@ -907,7 +893,10 @@ fn layout_on_streets(
             }
         }
         if n >= 2 {
-            outer_kind[n - 1] = DistrictKind::Outskirts;
+            // Keep at least one true outskirts wedge unless it is Port/Forest.
+            if let Some(i) = outer_kind.iter().rposition(|k| *k == DistrictKind::Residential) {
+                outer_kind[i] = DistrictKind::Outskirts;
+            }
         }
     } else {
         let leftover: usize = outer_kind
@@ -1496,6 +1485,7 @@ fn build_roads(
             sampler,
             seed,
             k as u64,
+            *kind,
             ax,
             ay,
             bx,
@@ -1521,24 +1511,110 @@ fn build_roads(
     roads
 }
 
-fn is_land(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
+fn road_pt(x: f32, y: f32) -> RoadPoint {
+    RoadPoint {
+        x,
+        y,
+        crossing: None,
+    }
+}
+
+const ROAD_CELL: f32 = 6.0;
+
+fn is_dry_land(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
     !is_water_biome(sampler.cell_at(x as f64, y as f64, LodLevel::Macro).elevation)
 }
 
-fn land_cost(sampler: &TerrainSampler, x: f32, y: f32) -> Option<u32> {
-    let elev = sampler
-        .cell_at(x as f64, y as f64, LodLevel::Macro)
-        .elevation;
-    if is_water_biome(elev) {
+/// Whether this cell may host a road: dry land, or a deterministic river bridge.
+fn road_cell_pass(
+    sampler: &TerrainSampler,
+    x: f32,
+    y: f32,
+    kind: RoadKind,
+    seed: u64,
+) -> Option<(u32, Option<RoadCrossing>)> {
+    let cell = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
+    let river = sampler.river_at(x as f64, y as f64);
+    let elev = cell.elevation;
+
+    if !is_water_biome(elev) {
+        let cost = if elev >= HIGH_M {
+            16
+        } else if elev >= UPLAND_M {
+            12
+        } else {
+            10
+        };
+        return Some((cost, None));
+    }
+
+    // Ocean / deep lake — no road.
+    if river.channel <= 0.55 {
         return None;
     }
-    if elev >= HIGH_M {
-        Some(16)
-    } else if elev >= UPLAND_M {
-        Some(12)
-    } else {
-        Some(10)
+
+    if !river_bridge_allowed(kind, seed, x, y) {
+        return None;
     }
+    Some((48, Some(RoadCrossing::Bridge)))
+}
+
+fn river_bridge_allowed(kind: RoadKind, seed: u64, x: f32, y: f32) -> bool {
+    let gx = (x / ROAD_CELL).floor() as i64;
+    let gy = (y / ROAD_CELL).floor() as i64;
+    let key = (gx.wrapping_mul(73856093) ^ gy.wrapping_mul(19349663) ^ kind_rank(kind) as i64) as u64;
+    let roll = unit_noise(seed, CHANNEL_BRIDGE, key);
+    match kind {
+        RoadKind::Highway => true,
+        RoadKind::Secondary => roll < 0.72,
+        RoadKind::Local => roll < 0.30,
+    }
+}
+
+/// Sample the step between road cells — thin rivers sit between 6u cell centers.
+fn step_river_crossing(
+    sampler: &TerrainSampler,
+    kind: RoadKind,
+    seed: u64,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+) -> Option<(u32, Option<(f32, f32)>)> {
+    let mut extra = 0u32;
+    let mut bridge_at: Option<(f32, f32)> = None;
+    for k in 1..8 {
+        let t = k as f32 / 8.0;
+        let x = x0 + (x1 - x0) * t;
+        let y = y0 + (y1 - y0) * t;
+        let cell = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
+        let river = sampler.river_at(x as f64, y as f64);
+        if !is_water_biome(cell.elevation) {
+            continue;
+        }
+        if river.channel <= 0.55 {
+            return None; // ocean / lake span
+        }
+        if !river_bridge_allowed(kind, seed, x, y) {
+            return None; // no passage at this crossing
+        }
+        if bridge_at.is_none() {
+            // Modest toll — short bridge beats a long dry detour.
+            extra = 18;
+            bridge_at = Some((x, y));
+        }
+    }
+    Some((extra, bridge_at))
+}
+
+fn cell_allows_road(
+    sampler: &TerrainSampler,
+    x: f32,
+    y: f32,
+    kind: RoadKind,
+    seed: u64,
+) -> bool {
+    road_cell_pass(sampler, x, y, kind, seed).is_some()
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -1564,8 +1640,6 @@ impl PartialOrd for PathNode {
     }
 }
 
-const ROAD_CELL: f32 = 6.0;
-
 fn snap_land_cell(
     sampler: &TerrainSampler,
     x: f32,
@@ -1588,7 +1662,7 @@ fn snap_land_cell(
                 }
                 let wx = (cx as f32 + 0.5) * ROAD_CELL;
                 let wy = (cy as f32 + 0.5) * ROAD_CELL;
-                if is_land(sampler, wx, wy) {
+                if is_dry_land(sampler, wx, wy) {
                     return Some((cx, cy));
                 }
             }
@@ -1599,6 +1673,8 @@ fn snap_land_cell(
 
 fn land_path(
     sampler: &TerrainSampler,
+    seed: u64,
+    kind: RoadKind,
     x0: f32,
     y0: f32,
     x1: f32,
@@ -1615,12 +1691,13 @@ fn land_path(
         return Vec::new();
     };
     if start == goal {
-        return vec![RoadPoint { x: x0, y: y0 }, RoadPoint { x: x1, y: y1 }];
+        return vec![road_pt(x0, y0), road_pt(x1, y1)];
     }
 
     let n = (cols * rows) as usize;
     let mut dist = vec![u32::MAX; n];
     let mut prev = vec![-1i32; n];
+    let mut prev_bridge: Vec<Option<(f32, f32)>> = vec![None; n];
     let idx = |x: i32, y: i32| (y * cols + x) as usize;
     let mut heap = BinaryHeap::new();
     dist[idx(start.0, start.1)] = 0;
@@ -1648,6 +1725,8 @@ fn land_path(
         if (x, y) == goal {
             break;
         }
+        let cx = (x as f32 + 0.5) * ROAD_CELL;
+        let cy = (y as f32 + 0.5) * ROAD_CELL;
         for (dx, dy, step) in dirs {
             let nx = x + dx;
             let ny = y + dy;
@@ -1659,20 +1738,30 @@ fn land_path(
                 let ay = (y as f32 + 0.5) * ROAD_CELL;
                 let bx = (x as f32 + 0.5) * ROAD_CELL;
                 let by = (y as f32 + dy as f32 + 0.5) * ROAD_CELL;
-                if !is_land(sampler, ax, ay) || !is_land(sampler, bx, by) {
+                if !cell_allows_road(sampler, ax, ay, kind, seed)
+                    || !cell_allows_road(sampler, bx, by, kind, seed)
+                {
                     continue;
                 }
             }
             let wx = (nx as f32 + 0.5) * ROAD_CELL;
             let wy = (ny as f32 + 0.5) * ROAD_CELL;
-            let Some(terrain) = land_cost(sampler, wx, wy) else {
+            let Some((terrain, _)) = road_cell_pass(sampler, wx, wy, kind, seed) else {
                 continue;
             };
-            let next = cost.saturating_add(step * terrain / 10);
+            let Some((cross_extra, bridge_at)) =
+                step_river_crossing(sampler, kind, seed, cx, cy, wx, wy)
+            else {
+                continue;
+            };
+            let next = cost
+                .saturating_add(step * terrain / 10)
+                .saturating_add(cross_extra);
             let ni = idx(nx, ny);
             if next < dist[ni] {
                 dist[ni] = next;
                 prev[ni] = idx(x, y) as i32;
+                prev_bridge[ni] = bridge_at;
                 heap.push(PathNode {
                     cost: next,
                     x: nx,
@@ -1687,31 +1776,45 @@ fn land_path(
     }
 
     let mut cells = Vec::new();
+    let mut bridges = Vec::new();
     let mut cur = idx(goal.0, goal.1) as i32;
     while cur >= 0 {
         let i = cur as usize;
         let cx = (i as i32) % cols;
         let cy = (i as i32) / cols;
         cells.push((cx, cy));
+        bridges.push(prev_bridge[i]);
         cur = prev[i];
         if (cx, cy) == start {
             break;
         }
     }
     cells.reverse();
+    bridges.reverse();
     if cells.is_empty() {
         return Vec::new();
     }
 
-    let mut points = Vec::with_capacity(cells.len() + 2);
-    points.push(RoadPoint { x: x0, y: y0 });
-    for (cx, cy) in cells {
+    let mut points = Vec::with_capacity(cells.len() + bridges.len() + 2);
+    points.push(road_pt(x0, y0));
+    for (i, (cx, cy)) in cells.iter().enumerate() {
+        if let Some((bx, by)) = bridges[i] {
+            points.push(RoadPoint {
+                x: bx,
+                y: by,
+                crossing: Some(RoadCrossing::Bridge),
+            });
+        }
+        let wx = (*cx as f32 + 0.5) * ROAD_CELL;
+        let wy = (*cy as f32 + 0.5) * ROAD_CELL;
+        let crossing = road_cell_pass(sampler, wx, wy, kind, seed).and_then(|(_, c)| c);
         points.push(RoadPoint {
-            x: (cx as f32 + 0.5) * ROAD_CELL,
-            y: (cy as f32 + 0.5) * ROAD_CELL,
+            x: wx,
+            y: wy,
+            crossing,
         });
     }
-    points.push(RoadPoint { x: x1, y: y1 });
+    points.push(road_pt(x1, y1));
     simplify_road(points)
 }
 
@@ -1729,7 +1832,7 @@ fn simplify_road(points: Vec<RoadPoint>) -> Vec<RoadPoint> {
         let bcx = c.x - b.x;
         let bcy = c.y - b.y;
         let cross = (abx * bcy - aby * bcx).abs();
-        let keep = cross > 4.0;
+        let keep = cross > 4.0 || b.crossing.is_some();
         if keep {
             out.push(b.clone());
         }
@@ -1738,20 +1841,14 @@ fn simplify_road(points: Vec<RoadPoint>) -> Vec<RoadPoint> {
     out
 }
 
-fn straight_on_land(
-    sampler: &TerrainSampler,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-) -> bool {
+fn straight_dry_land(sampler: &TerrainSampler, x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
     let dx = x1 - x0;
     let dy = y1 - y0;
     let dist = (dx * dx + dy * dy).sqrt();
     let n = ((dist / 3.0).ceil() as usize).clamp(2, 80);
     for i in 1..n {
         let t = i as f32 / n as f32;
-        if !is_land(sampler, x0 + dx * t, y0 + dy * t) {
+        if !is_dry_land(sampler, x0 + dx * t, y0 + dy * t) {
             return false;
         }
     }
@@ -1762,6 +1859,7 @@ fn trace_road(
     sampler: &TerrainSampler,
     seed: u64,
     index: u64,
+    kind: RoadKind,
     x0: f32,
     y0: f32,
     x1: f32,
@@ -1770,7 +1868,7 @@ fn trace_road(
     world_w: f32,
     world_h: f32,
 ) -> Vec<RoadPoint> {
-    let points = if straight_on_land(sampler, x0, y0, x1, y1) {
+    let points = if straight_dry_land(sampler, x0, y0, x1, y1) {
         let dx = x1 - x0;
         let dy = y1 - y0;
         let dist = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -1789,26 +1887,132 @@ fn trace_road(
                     * wobble;
                 let nx = x + px * w;
                 let ny = y + py * w;
-                if is_land(sampler, nx, ny) {
+                if is_dry_land(sampler, nx, ny) {
                     x = nx;
                     y = ny;
                 }
             }
-            pts.push(RoadPoint { x, y });
+            pts.push(road_pt(x, y));
         }
         pts
     } else {
-        land_path(sampler, x0, y0, x1, y1, world_w, world_h)
+        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h)
     };
     if points.len() < 2 {
         return points;
     }
-    for p in points.iter().skip(1).rev().skip(1) {
-        if !is_land(sampler, p.x, p.y) {
-            return land_path(sampler, x0, y0, x1, y1, world_w, world_h);
+    let points = if points
+        .iter()
+        .skip(1)
+        .rev()
+        .skip(1)
+        .any(|p| !cell_allows_road(sampler, p.x, p.y, kind, seed))
+    {
+        land_path(sampler, seed, kind, x0, y0, x1, y1, world_w, world_h)
+    } else {
+        points
+    };
+    clamp_road_to_land_or_bridge(sampler, kind, seed, points)
+}
+
+/// Densify, then keep dry ground; river spans become a single Bridge or the road ends at shore.
+fn clamp_road_to_land_or_bridge(
+    sampler: &TerrainSampler,
+    kind: RoadKind,
+    seed: u64,
+    points: Vec<RoadPoint>,
+) -> Vec<RoadPoint> {
+    if points.len() < 2 {
+        return points;
+    }
+    let mut dense: Vec<(f32, f32)> = Vec::new();
+    for w in points.windows(2) {
+        let (ax, ay) = (w[0].x, w[0].y);
+        let (bx, by) = (w[1].x, w[1].y);
+        let dist = ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)).sqrt();
+        let steps = ((dist / 1.25).ceil() as usize).clamp(1, 64);
+        for s in 0..steps {
+            let t = s as f32 / steps as f32;
+            dense.push((ax + (bx - ax) * t, ay + (by - ay) * t));
         }
     }
-    points
+    if let Some(last) = points.last() {
+        dense.push((last.x, last.y));
+    }
+
+    let mut out: Vec<RoadPoint> = Vec::new();
+    let mut i = 0usize;
+    while i < dense.len() {
+        let (x, y) = dense[i];
+        let elev = sampler
+            .cell_at(x as f64, y as f64, LodLevel::Macro)
+            .elevation;
+        let river = sampler.river_at(x as f64, y as f64);
+
+        if !is_water_biome(elev) {
+            push_road_pt_dedup(&mut out, road_pt(x, y));
+            i += 1;
+            continue;
+        }
+
+        // Water: try to span a river with a bridge to the next dry sample.
+        let river_ok = river.channel > 0.55 && river_bridge_allowed(kind, seed, x, y);
+        if river_ok {
+            let mut j = i;
+            while j < dense.len() {
+                let (sx, sy) = dense[j];
+                let e = sampler
+                    .cell_at(sx as f64, sy as f64, LodLevel::Macro)
+                    .elevation;
+                let r = sampler.river_at(sx as f64, sy as f64);
+                if !is_water_biome(e) {
+                    break;
+                }
+                if r.channel <= 0.55 || !river_bridge_allowed(kind, seed, sx, sy) {
+                    // Hits ocean / blocked river — stop at last dry.
+                    return out;
+                }
+                j += 1;
+            }
+            if j < dense.len() {
+                let mid = dense[i + (j - i) / 2];
+                push_road_pt_dedup(
+                    &mut out,
+                    RoadPoint {
+                        x: mid.0,
+                        y: mid.1,
+                        crossing: Some(RoadCrossing::Bridge),
+                    },
+                );
+                i = j;
+                continue;
+            }
+        }
+
+        // Dead-end at shore (or no passage).
+        break;
+    }
+
+    if out.len() < 2 {
+        Vec::new()
+    } else {
+        out
+    }
+}
+
+fn push_road_pt_dedup(out: &mut Vec<RoadPoint>, p: RoadPoint) {
+    if let Some(last) = out.last() {
+        let dx = last.x - p.x;
+        let dy = last.y - p.y;
+        if dx * dx + dy * dy < 0.35 * 0.35 {
+            if p.crossing.is_some() && last.crossing.is_none() {
+                out.pop();
+                out.push(p);
+            }
+            return;
+        }
+    }
+    out.push(p);
 }
 
 fn lerp_u32(a: u32, b: u32, t: f32) -> u32 {
@@ -1916,12 +2120,24 @@ mod tests {
         for i in 0..road.points.len() {
             let p = &road.points[i];
             let cell = sampler.cell_at(p.x as f64, p.y as f64, LodLevel::Macro);
-            assert!(
-                !is_water_biome(cell.elevation),
-                "road vertex in water at ({}, {})",
-                p.x,
-                p.y
-            );
+            let river = sampler.river_at(p.x as f64, p.y as f64);
+            if cell.elevation < WATER_M {
+                assert_eq!(
+                    p.crossing,
+                    Some(RoadCrossing::Bridge),
+                    "water road vertex must be a bridge at ({}, {})",
+                    p.x,
+                    p.y
+                );
+                assert!(
+                    river.channel > 0.55,
+                    "bridge must sit on a river channel at ({}, {})",
+                    p.x,
+                    p.y
+                );
+            } else {
+                assert!(p.crossing.is_none());
+            }
             if i + 1 >= road.points.len() {
                 continue;
             }
@@ -1935,16 +2151,22 @@ mod tests {
                 let x = p.x + dx * t;
                 let y = p.y + dy * t;
                 let c = sampler.cell_at(x as f64, y as f64, LodLevel::Macro);
-                assert!(
-                    !is_water_biome(c.elevation),
-                    "road segment in water at ({x}, {y})"
-                );
+                let river = sampler.river_at(x as f64, y as f64);
+                if c.elevation < WATER_M {
+                    // Mid-segment may skim a bridge span between marked vertices.
+                    assert!(
+                        river.channel > 0.55
+                            || p.crossing == Some(RoadCrossing::Bridge)
+                            || q.crossing == Some(RoadCrossing::Bridge),
+                        "road segment in non-bridge water at ({x}, {y})"
+                    );
+                }
             }
         }
     }
 
     #[test]
-    fn seed_6_roads_stay_on_land() {
+    fn seed_6_roads_stay_on_land_or_bridges() {
         let config = seed_config(6);
         let sampler = TerrainSampler::new(config.clone());
         let map = generate(config);
@@ -1952,6 +2174,22 @@ mod tests {
         for road in &map.roads {
             sample_road_on_land(&sampler, road);
         }
+    }
+
+    #[test]
+    fn seed_6_has_river_bridges() {
+        let config = seed_config(6);
+        let map = generate(config);
+        let bridges = map
+            .roads
+            .iter()
+            .flat_map(|r| r.points.iter())
+            .filter(|p| p.crossing == Some(RoadCrossing::Bridge))
+            .count();
+        assert!(
+            bridges >= 1,
+            "expected at least one river bridge on seed 6, got {bridges}"
+        );
     }
 
     fn has_kind(districts: &[District], kind: DistrictKind) -> bool {
@@ -2028,6 +2266,20 @@ mod tests {
         assert!(has_kind(&with_port, DistrictKind::Port));
         assert!(has_kind(&with_port, DistrictKind::Residential));
         assert!(has_kind(&with_port, DistrictKind::Noble));
+        assert!(!has_kind(&with_port, DistrictKind::Forest));
+        let port = with_port
+            .iter()
+            .find(|d| d.kind == DistrictKind::Port)
+            .expect("port district");
+        assert!(
+            port.inner >= 0.55,
+            "port should sit on the outer ring, got inner={}",
+            port.inner
+        );
+
+        let (_, _, bare) = layout_districts(6, 3, SettlementKind::City, None, None);
+        assert!(!has_kind(&bare, DistrictKind::Port));
+        assert!(!has_kind(&bare, DistrictKind::Forest));
 
         let mut saw_offset = false;
         let mut saw_centered = false;
@@ -2041,5 +2293,44 @@ mod tests {
         }
         assert!(saw_offset, "expected some civic cores off-center");
         assert!(saw_centered, "expected some civic cores in the middle");
+    }
+
+    #[test]
+    fn street_layout_port_outer_forest_requires_biome() {
+        let approaches = vec![RoadApproach {
+            angle: 0.0,
+            kind: RoadKind::Highway,
+        }];
+        let (_, _, with_port, _) = layout_on_streets(
+            6,
+            3,
+            SettlementKind::City,
+            &approaches,
+            Some(1.2),
+            None,
+        );
+        assert!(has_kind(&with_port, DistrictKind::Port));
+        assert!(!has_kind(&with_port, DistrictKind::Forest));
+        let port = with_port
+            .iter()
+            .find(|d| d.kind == DistrictKind::Port)
+            .expect("port");
+        assert!(port.inner >= 0.5, "port on outer ring, inner={}", port.inner);
+
+        let (_, _, with_forest, _) = layout_on_streets(
+            6,
+            3,
+            SettlementKind::City,
+            &approaches,
+            None,
+            Some(0.0),
+        );
+        assert!(has_kind(&with_forest, DistrictKind::Forest));
+        assert!(!has_kind(&with_forest, DistrictKind::Port));
+
+        let (_, _, bare, _) =
+            layout_on_streets(6, 3, SettlementKind::City, &approaches, None, None);
+        assert!(!has_kind(&bare, DistrictKind::Port));
+        assert!(!has_kind(&bare, DistrictKind::Forest));
     }
 }

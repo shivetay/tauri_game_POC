@@ -3,6 +3,10 @@ mod world;
 use std::sync::Mutex;
 use tauri::State;
 use world::config::{TerrainGenParams, WorldConfig};
+use world::ecology::{
+    generate_chunk_ecology as gen_chunk_ecology, generate_region_ecology as gen_region_ecology,
+    ChunkEcologyMap, RegionEcologyMap,
+};
 use world::grid::{
     generate_chunk_grid, generate_global_grid, generate_region_grid, generate_view_grid,
 };
@@ -96,6 +100,32 @@ fn generate_settlements(seed: u64, params: TerrainGenParams) -> SettlementMap {
     generate_settlement_map(config_with(seed, params))
 }
 
+#[tauri::command]
+fn generate_region_ecology(
+    seed: u64,
+    params: TerrainGenParams,
+    rx: u32,
+    ry: u32,
+) -> RegionEcologyMap {
+    gen_region_ecology(config_with(seed, params), RegionId { rx, ry })
+}
+
+#[tauri::command]
+fn generate_chunk_ecology(
+    seed: u64,
+    params: TerrainGenParams,
+    rx: u32,
+    ry: u32,
+    cx: u32,
+    cy: u32,
+) -> ChunkEcologyMap {
+    gen_chunk_ecology(
+        config_with(seed, params),
+        RegionId { rx, ry },
+        ChunkId { cx, cy },
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -106,7 +136,9 @@ pub fn run() {
             generate_region,
             generate_chunk,
             generate_view,
-            generate_settlements
+            generate_settlements,
+            generate_region_ecology,
+            generate_chunk_ecology
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

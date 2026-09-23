@@ -77,6 +77,8 @@ export type RoadKind = "Highway" | "Secondary" | "Local";
 
 export type RoadSurface = "Paved" | "Packed" | "Dirt";
 
+export type RoadCrossing = "Bridge";
+
 export interface RoadApproach {
 	angle: number;
 	kind: RoadKind;
@@ -92,6 +94,7 @@ export interface Street {
 export interface RoadPoint {
 	x: number;
 	y: number;
+	crossing?: RoadCrossing;
 }
 
 export interface Road {
@@ -109,4 +112,46 @@ export interface WorldBounds {
 	x0: number;
 	y0: number;
 	span: number;
+}
+
+export type FaunaGroup = "LargeMammal" | "Bird" | "SmallFauna";
+
+export type LifeKind = "Flora" | "Fauna";
+
+export interface HabitatCell {
+	potential: number;
+	largeMammals: number;
+	birds: number;
+	smallFauna: number;
+}
+
+export interface RegionTileExpect {
+	flora: string[];
+	fauna: string[];
+}
+
+export interface RegionEcologyMap {
+	width: number;
+	height: number;
+	cells: HabitatCell[];
+	tilesAcross: number;
+	tiles: RegionTileExpect[];
+}
+
+export interface LifeInstance {
+	x: number;
+	y: number;
+	kind: LifeKind;
+	group: FaunaGroup | null;
+	species: string;
+	subspecies: string;
+	biome: TileType;
+}
+
+export interface ChunkEcologyMap {
+	width: number;
+	height: number;
+	cells: HabitatCell[];
+	flora: LifeInstance[];
+	fauna: LifeInstance[];
 }
