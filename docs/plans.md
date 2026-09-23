@@ -1,6 +1,6 @@
 # Plany rozbudowy — od mapy do gry
 
-Dokument opisuje, jak obecny podgląd proceduralnej mapy może stać się częścią gry, w której:
+Dokument opisuje, jak obecny podgląd proceduralnej mapy (Rust + egui) może stać się częścią gry, w której:
 
 - jesteś częścią świata i możesz zacząć w dowolnym miejscu na mapie,
 - zaczynasz bez niczego,
@@ -59,7 +59,7 @@ Poniższe pięć filarów to kanoniczna oś rozbudowy. Reszta dokumentu (warstwy
 **Jak to spiąć z mapą:**
 
 - LOD już dzieli świat → region → obszar — to gotowy podział „gdzie jest detal”.
-- `WorldState` w `lib.rs` dziś trzyma config + cache global — naturalne miejsce na `GameClock` + kolejkę ticków.
+- `WorldState` / stan aplikacji dziś trzyma seed, params i LOD — naturalne miejsce na `GameClock` + kolejkę ticków.
 - Determinizm: tick N na seedzie S daje te same wyniki agregatów (PRNG kanałowy jak w `prng.rs`).
 
 **ECS — werdykt:**
@@ -70,7 +70,7 @@ Poniższe pięć filarów to kanoniczna oś rozbudowy. Reszta dokumentu (warstwy
 
 **Ryzyka:** zbyt gęsty tick globalny zabije FPS; zbyt rzadki — świat „skacze”. Start: 1 tick = 1 godzina gry, agregaty ekonomii co dzień/tydzień.
 
-**Miejsca rozwoju:** `lib.rs` (`WorldState`), nowy `world/clock.rs`, `world/sim.rs` (far), detal w UI tylko dla aktywnego chunka.
+**Miejsca rozwoju:** `app.rs` (stan sesji), nowy `world/clock.rs`, `world/sim.rs` (far), detal w UI tylko dla aktywnego chunka.
 
 **Zależności:** A blokuje B–E. Bez czasu nie ma braków zimowych, dziedziczenia ani rozrostu granic.
 
@@ -207,7 +207,7 @@ Cel: da się **żyć** na mapie — urodzić się, chodzić, mieć nic, zarobić
 - Walidacja: suchy ląd, nie koryto rzeki, nie śnieg wysokogórski (reuse scoringu biomu / `site_score`).
 - Stan: pozycja `(x, y)`, aktywny region/chunk (kotwica dual-sim z A).
 - Start: pusty ekwipunek, 0 monet, brak tytułu — „bez niczego”.
-- **Gdzie:** `world/player` + komenda Tauri + hook UI; spawn przez `TerrainSampler` + `RiverSample`.
+- **Gdzie:** `world/player` + stan w `MapApp` / sesji gry; spawn przez `TerrainSampler` + `RiverSample`.
 
 ### 1.2. Kamera i podróż (LOD = strefa detalu)
 
@@ -215,7 +215,7 @@ Cel: da się **żyć** na mapie — urodzić się, chodzić, mieć nic, zarobić
 - Wejście w obszar `(cx, cy)` włącza symulację detaliczną; wyjście ją wyłącza (A).
 - Koszt ruchu od biomu; drogi przyspieszają.
 - Lekki fog of war: biom z daleka, nazwy osad po odkryciu.
-- **Gdzie:** `GridMapView` + marker; ruch w Rust.
+- **Gdzie:** `app.rs` (mapa + marker gracza); ruch w Rust.
 
 ### 1.3. Zegar gry, ticki i zapis (filar A — minimum)
 
@@ -224,7 +224,7 @@ Cel: da się **żyć** na mapie — urodzić się, chodzić, mieć nic, zarobić
 - Save: `{ seed, params, clock, player, discoveries, inventory, world_deltas, economy_snapshot }`.
 - Load: teren z seeda + nakładki sesji.
 - Pauza / prędkość czasu w UI.
-- **Gdzie:** `world/clock.rs`, `world/sim.rs`, rozszerzenie `WorldState` w `lib.rs`; persist JSON (Tauri FS).
+- **Gdzie:** `world/clock.rs`, `world/sim.rs`, stan sesji w aplikacji egui; persist JSON (plik lokalny).
 - **Uwaga ECS:** systemy tickowe jako zwykłe funkcje Rust na start; pełny ECS opcjonalnie później.
 
 ### 1.4. Survival-lite: zbieractwo z biomu
@@ -278,7 +278,7 @@ Cel: da się **żyć** na mapie — urodzić się, chodzić, mieć nic, zarobić
 - Preview = generator (jak dziś). Play = HUD + zegar + tablica + rynek.
 - HUD: data/sezon (A), monety, głód, najbliższa osada, aktywne Needs.
 - Suwaki orogenezy tylko przy **nowej grze**.
-- **Gdzie:** `App.tsx`; `PlayHud`, `SettlementPanel`, `QuestBoard`.
+- **Gdzie:** `app.rs` (egui); panele `PlayHud`, `SettlementPanel`, `QuestBoard`.
 
 **Uzasadnienie warstwy:** A daje ruch; B daje powód do zarabiania od zera na lukach rynku. Bez tego reszta filarów nie ma na czym stanąć.
 
@@ -433,7 +433,9 @@ Cel: urazy generacyjne, organiczny rozrost miast, demografia i państwa — siln
 
 | Obszar | Dziś | Kierunek (A–E) |
 | --- | --- | --- |
-| `lib.rs` / `WorldState` | config + cache | zegar, sesja Play, save |
+| `app.rs` (egui) | seed, params, LOD, legendy | Play, HUD, overlay Needs/claimów |
+| `render.rs` / `*_draw.rs` | tekstura mapy (teren + osady + ekologia) | markery gracza, eventy, fog |
+| `world/` + ewentualny stan sesji | generacja + podgląd | zegar, save, Play |
 | nowy `world/clock.rs`, `sim.rs` | — | A: ticki, dual-sim |
 | nowy `world/economy.rs` | — | B: stockpile, Needs, ceny |
 | nowy `world/quests.rs` | — | B: tablica z Needs |
@@ -444,8 +446,8 @@ Cel: urazy generacyjne, organiczny rozrost miast, demografia i państwa — siln
 | nowy `world/lineage.rs` | — | C: ród, dziedzic |
 | nowy `world/guilds.rs`, `relations.rs` | — | D: cechy, urazy |
 | nowy `world/claims.rs` | — | E: granice, tension |
-| `App.tsx`, `components/Map/` | preview LOD | Play, HUD, overlay Needs/claimów |
-| `api/world.ts` | generate_* | clock, market, board, save |
+
+**Stack UI:** czysty Rust (`eframe` / `egui`). Nie ma Reacta ani Tauri IPC — generacja i rysowanie w jednym procesie.
 
 ---
 

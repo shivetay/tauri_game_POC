@@ -1,51 +1,41 @@
----
-description: map_tests project context — tech stack, architecture, conventions
-alwaysApply: true
----
-
 # Project: map_tests
 
 Procedural world-map preview. Desktop app.
 
 ## Tech stack
 
-- **Desktop**: Tauri 2
-- **Frontend**: React 19, TypeScript 5.8, Vite 7
-- **Backend**: Rust (terrain generation)
-- **Package manager**: pnpm
-- **Noise**: `noise` (Rust); `simplex-noise` (JS — legacy, do not use for new generation)
-- **Parallelism**: `rayon` (Rust)
+- **Desktop / UI**: Rust, eframe + egui
+- **World**: Rust (`noise`, `rayon`, `serde`)
 
 ## Architecture
 
-- Rust is the only source of truth for terrain — the frontend only renders
-- Frontend calls Tauri commands via `invoke()` from `src/api/world.ts`
-- Canvas rendering: `TerrainGrid` → `ImageData` → `<canvas>`
+- Rust is the only source of truth for terrain — UI only renders
+- `app.rs` calls `world::grid` / settlement / ecology on a **worker thread**
+- Texture compose: terrain + habitat wash + roads + settlements → egui texture (`render.rs`)
 - Three LOD levels: global → region → chunk
-- Seed: `u64` / `number`. Params: `TerrainParams` ↔ `TerrainGenParams`
+- Seed: `u64`. Params: `TerrainGenParams`
 
 ## Directory layout
 
 ```
-src/                    # React frontend
-  api/world.ts          # Tauri invoke wrappers + types
-  hooks/                # useWorldMap, useRegionMap, useChunkMap
-  components/Map/       # GlobalMapView, RegionMapView, ChunkMapView
-  components/Control/   # SeedControl, BiomeLegend
-  map/                  # render.ts, colors.ts
-  types/                # world.d.ts, terrainParams.ts
-  utils/                # constants.ts
-src-tauri/              # Rust backend
-  src/world/            # sampler, grid, noise, biome, shape, elevation, ridge, config, prng, types
-  src/lib.rs            # Tauri commands
-docs/                   # Architecture notes
-AGENTS.md               # Agent contract
+src-tauri/                 # Rust app crate
+  src/
+    main.rs                # eframe entry
+    lib.rs
+    app.rs                 # egui UI + LOD + legends
+    colors.rs              # biome colors
+    render.rs              # compose map ColorImage
+    settlements_draw.rs    # settlements + roads (RGBA)
+    ecology_draw.rs        # habitat wash + life summaries
+    world/                 # sampler, grid, biome, river, settlement, ecology, …
+docs/                      # Polish notes (seed, plans)
+AGENTS.md
 ```
 
 ## Domain rules
 
 - **Determinism**: same seed + same params → same world
 - **6 shape profiles**: Radial, Ellipse, SquareBump, Irregular, Archipelago, Continents
-- Profile comes from `seed % 6` (app default seed: `6` → Ellipse)
-- Derived streams (moisture, etc.) from `prng`, not a separate global RNG
-- The app runs ONLY as a Tauri desktop app — not as a plain web app
+- Profile from `seed % 6` (default seed `6` → Ellipse)
+- Derived streams via `prng`, not a separate global RNG
+- Run: `cargo run` in `src-tauri` (no web frontend)

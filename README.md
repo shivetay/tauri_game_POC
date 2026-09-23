@@ -1,26 +1,32 @@
 # map_tests
 
-Podgląd proceduralnej mapy świata (Tauri 2 + React + Rust). Teren, rzeki, osady i ekologia liczone są w Rust; frontend tylko rysuje. **Ten sam seed i te same parametry zawsze dają ten sam świat.**
+Podgląd proceduralnej mapy świata (**Rust + egui**). Teren, rzeki, osady i ekologia liczone są w tym samym procesie co UI. **Ten sam seed i te same parametry zawsze dają ten sam świat.**
 
 ```bash
-pnpm install
-pnpm tauri dev
+cd src-tauri
+cargo run
 ```
 
-Aplikacja działa wyłącznie w oknie Tauri — nie otwieraj `localhost:1420` w przeglądarce.
+Testy generatora:
+
+```bash
+cd src-tauri
+cargo test --lib
+```
 
 ## Szybki start
 
 1. Wpisz seed (nieujemna liczba całkowita) albo kliknij **Losuj seed**.
 2. Opcjonalnie ustaw suwaki (0–1) — zapisują się dopiero po **Regenerate**.
-3. Kliknij **Regenerate**.
-4. Klik w teren: świat → region → obszar. Przycisk wstecz wraca wyżej. Klik w osadę pokazuje opis, bez zmiany LOD.
+3. Kliknij **Regenerate** (lub **Pokaż opis**, by zobaczyć skrót o `seed % 6`).
+4. Klik w teren: świat → region → obszar. Przycisk **← …** wraca wyżej.
+5. Klik w osadę pokazuje opis (bez zmiany LOD). Na obszarze: klik w teren → biom + gatunki w zasięgu.
 
 Domyślny seed: `6` → profil **Ellipse**.
 
 ## Seed i kształt lądu
 
-Seed to `u64` / liczba. Profil kształtu: `seed % 6`.
+Seed to `u64`. Profil kształtu: `seed % 6`.
 
 | `seed % 6` | Profil | Opis |
 | --- | --- | --- |
@@ -50,21 +56,28 @@ Ten sam seed steruje też wysokością, wilgotnością, pasmami gór, wybrzeżem
 
 | Poziom | Co widać |
 | --- | --- |
-| Świat | Biomy, główne drogi, miasta i miasteczka |
-| Region | Biomy, wszystkie osady, drogi, warstwa siedlisk |
-| Obszar | Biomy, obrys miasta z dzielnicami, drogi z mostami, flora i fauna |
+| Świat | Biomy, szlaki główne, miasta i miasteczka (markery) |
+| Region | Biomy, wash siedlisk, wszystkie osady (plany), drogi |
+| Obszar | Biomy, wash życia, footprinty osad, drogi z mostami; klik → biom / gatunki |
 
 ## Warstwy świata
 
-- **Teren / biomy** — wysokość (m, poziom morza = 0), wilgotność, klasyfikacja biomu (woda, piasek, pustynia, trawa, las, góry, śnieg itd.).
-- **Rzeki** — sieć źródła → spływ → dopływy / delty / jeziora; koryto wycinane w teren (widać jako wodę); brzegi wilgotniejsze; wpływ na lokalizację osad i mosty na drogach.
-- **Osady** — Hamlet / Village / Town / City (polskie nazwy, populacja); większe mają dzielnice i ulice.
-- **Drogi** — Highway / Secondary / Local, nawierzchnia i mosty nad rzekami.
-- **Ekologia** — w regionie: potencjał siedliska; w obszarze: konkretne gatunki flory i fauny.
+- **Teren / biomy** — wysokość (m, poziom morza = 0), wilgotność, klasyfikacja biomu.
+- **Rzeki** — sieć źródła → spływ; koryto wycinane w teren; mosty na drogach.
+- **Osady** — Hamlet / Village / Town / City (dzielnice, ulice); drogi Highway / Secondary / Local.
+- **Ekologia** — w regionie: potencjał siedliska; w obszarze: flora i fauna (klik w zasięgu).
 
-## Architektura (skrót)
+## Architektura
 
-- Generacja: `src-tauri/src/world/`
-- Komendy Tauri: `src-tauri/src/lib.rs`
-- Wywołania z UI: `src/api/world.ts`
-- Widoki LOD: `GlobalMapView` → `RegionMapView` → `ChunkMapView`
+| Ścieżka | Rola |
+| --- | --- |
+| `src-tauri/src/world/` | Generacja (jedyna prawda terenu) |
+| `src-tauri/src/app.rs` | Okno egui, seed/params, LOD, legendy |
+| `src-tauri/src/render.rs` | Składanie tekstury mapy (teren + overlaye) |
+| `src-tauri/src/colors.rs` | Kolory biomów |
+| `src-tauri/src/settlements_draw.rs` | Rysowanie osad i dróg (RGBA) |
+| `src-tauri/src/ecology_draw.rs` | Wash siedlisk + podsumowania życia |
+
+Generacja działa w **osobnym wątku**; UI dostaje gotową siatkę i buduje teksturę lokalnie (bez IPC / JSON).
+
+Więcej: `docs/seed.md` (seed), `docs/plans.md` (kierunek pod grę), `AGENTS.md` (kontrakt dla agentów).

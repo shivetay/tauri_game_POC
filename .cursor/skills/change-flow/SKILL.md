@@ -25,7 +25,7 @@ Steps:
 Files to change:
 Files I will not touch:
 Success criteria:
-Risk (determinism / LOD / TS↔Rust types):
+Risk (determinism / LOD / UI↔world types):
 ```
 
 Wait for OK unless the user already said to implement / add / just do it.
@@ -49,9 +49,8 @@ Before finishing, walk **your own** diff:
 
 | Change | Check |
 | --- | --- |
-| `src-tauri/src/world/**` | seed `6` = Ellipse; other `seed % 6` keep the same profile; `cargo test` in `src-tauri` if the touched module has tests |
-| `src/api/world.ts` or commands | TS signature = Rust `invoke`; `Serialize` + camelCase params |
-| UI / canvas / hooks | global → region → chunk flow in the Tauri window (`pnpm tauri dev`), not the browser |
+| `src-tauri/src/world/**` | seed `6` = Ellipse; other `seed % 6` keep the same profile; `cargo test --lib` in `src-tauri` if the touched module has tests |
+| UI (`app.rs` / `render.rs` / `colors.rs`) | global → region → chunk in the egui window (`cargo run` in `src-tauri`) |
 | docs/rules only | do not run the app |
 
 After the change: briefly what was done, what was left alone, how it was verified. Do not finish with unused warnings in your own diff.
