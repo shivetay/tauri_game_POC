@@ -3,12 +3,12 @@ name: terrain-generation
 description: >-
   Change Rust terrain generation without breaking seed determinism. Use when
   editing world/ sampler, grid, noise, biome, shape, elevation, ridge, prng,
-  config, seed, LOD, or Tauri generate_* commands.
+  config, seed, LOD, or grid generate_* APIs.
 ---
 
 # Terrain generation
 
-Rust is the only source of terrain. Do not move generation logic to JS.
+Rust is the only source of terrain. Do not move generation logic into the UI.
 
 ## Module map
 
@@ -23,9 +23,13 @@ src-tauri/src/world/
   ridge.rs      ridges
   biome.rs      TileType classification
   sampler.rs    sample a point
-  grid.rs       generate_global / region / chunk
+  grid.rs       generate_global / region / chunk / view
   delta.rs      stub for future terrain edits
-src-tauri/src/lib.rs   Tauri commands
+src-tauri/src/app.rs              egui UI (calls world::*)
+src-tauri/src/colors.rs           biome colors
+src-tauri/src/render.rs           compose ColorImage
+src-tauri/src/settlements_draw.rs settlements + roads overlay
+src-tauri/src/ecology_draw.rs     habitat wash + life summary
 ```
 
 ## Determinism
@@ -39,17 +43,14 @@ src-tauri/src/lib.rs   Tauri commands
 
 | Want | Where | Mirror |
 | --- | --- | --- |
-| Tauri command | `lib.rs` + `invoke_handler` | `src/api/world.ts` |
-| Generator param | `TerrainGenParams` + `apply_to` | `src/types/terrainParams.ts` (camelCase) |
-| Biome | `biome.rs` (`TileType`) | `src/map/colors.ts`, `src/types/world.d.ts` |
+| Generator param | `TerrainGenParams` + `apply_to` | egui sliders in `app.rs` if exposed |
+| Biome | `biome.rs` (`TileType`) | `colors.rs` |
 | Shape profile | `shape.rs` + `from_index` `% N` | update docs/rules if N changes |
 | Noise helper | `noise.rs` — do not duplicate | — |
 
-Types sent to the frontend: `serde::Serialize`. Grids: `rayon` as in `grid.rs`.
+Grids: `rayon` as in `grid.rs`.
 
 ## Tests
-
-`shape.rs` has unit tests for profiles. Run them after shape/prng/config changes:
 
 ```bash
 cd src-tauri && cargo test --lib

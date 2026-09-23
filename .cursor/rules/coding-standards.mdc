@@ -1,8 +1,3 @@
----
-description: Coding standards and repeatable AI results
-alwaysApply: true
----
-
 # Coding standards
 
 ## Repeatable results
@@ -12,7 +7,7 @@ alwaysApply: true
 - Do not "improve" neighboring code, comments, or formatting
 - Match the existing style even if you would do it differently
 - If the task is ambiguous — ask before coding
-- Do not add npm/cargo dependencies; use the existing stack
+- Do not add crates unless required for the task; prefer `noise`, `rayon`, `serde`, `eframe`/`egui`
 
 ## Simplicity
 
@@ -26,7 +21,7 @@ alwaysApply: true
 The agent cleans **its own** diff before calling the task done:
 
 - Remove unused imports, variables, parameters, types, functions, and files that you added or that your change made dead
-- Do not leave commented-out code, debug `console.log` / `println!`, throwaway `TODO`, or `#[allow(dead_code)]` as a sweep-under
+- Do not leave commented-out code, debug logs, throwaway `TODO`, or `#[allow(dead_code)]` as a sweep-under
 - Do not export "just in case". Do not create helpers, types, or constants unused in the same diff
 - After edits, lint touched files and fix warnings you introduced
 - Do not touch pre-existing dead code that your change did not cause — unless the user asks

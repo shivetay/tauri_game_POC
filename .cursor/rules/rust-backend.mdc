@@ -1,26 +1,24 @@
 ---
-description: Rust backend conventions (terrain generation)
+description: Rust terrain generation and egui map UI
 globs: src-tauri/**/*.rs
-alwaysApply: false
 ---
-
-# Rust — terrain generation
+# Rust — terrain + UI
 
 ## Rules
 
-- All terrain is generated in Rust — never move generation logic to JS
+- All terrain is generated in `world/` — never move generation into the UI layer
 - Keep determinism: the same (seed, params, x, y) must produce the same result
 - Seed is `u64`; profile: `seed % 6`
-- Add new Tauri commands in `lib.rs` and register them in `invoke_handler`
-- Types returned to the frontend must implement `serde::Serialize`
-- Params from the UI: `TerrainGenParams` (`camelCase`) → `apply_to(&mut WorldConfig)`
+- UI: `app.rs` (egui). Compose: `render.rs`. Settlements/roads: `settlements_draw.rs`. Ecology wash: `ecology_draw.rs`. Biome colors: `colors.rs`
+- Params: `TerrainGenParams` → `apply_to(&mut WorldConfig)`
 
 ## Code conventions
 
 - Use `rayon` for parallel grid generation
 - Noise helpers live in `world/noise.rs` — do not duplicate them
-- Add new biomes in `world/biome.rs`, colors in `src/map/colors.ts`
+- Add new biomes in `world/biome.rs`, colors in `colors.rs`
 - Add new shape profiles in `world/shape.rs` and update `from_index` (`% N`)
+- Heavy generation runs on a worker thread; do not block the egui frame
 
 ## world module layout
 
@@ -35,6 +33,9 @@ world/
   ridge.rs      — ridges
   biome.rs      — biome classification
   sampler.rs    — main terrain sampler
-  grid.rs       — generate_global / region / chunk
+  grid.rs       — generate_global / region / chunk / view
+  river.rs      — river network
+  settlement.rs — settlements + roads
+  ecology.rs    — region/chunk habitat + life
   delta.rs      — stub for future terrain edits
 ```
