@@ -1,8 +1,6 @@
 import type {
-	ChunkId,
 	District,
 	DistrictKind,
-	RegionId,
 	Road,
 	RoadKind,
 	RoadSurface,
@@ -12,7 +10,6 @@ import type {
 	TileType,
 	WorldBounds,
 } from "../types/world";
-import { chunkWorldBounds } from "../api/world";
 
 export interface SettlementInfo {
 	label: string;
@@ -137,45 +134,17 @@ function settlementWorldRadius(settlement: Settlement): number {
 	return settlement.radius * maxR * 1.06;
 }
 
-export function viewBoundsForChunk(
-	region: RegionId,
-	chunk: ChunkId,
-	settlements: Settlement[],
-): WorldBounds {
-	const chunkBounds = chunkWorldBounds(region, chunk);
-	const x0 = chunkBounds.x0;
-	const y0 = chunkBounds.y0;
-	const x1 = x0 + chunkBounds.span;
-	const y1 = y0 + chunkBounds.span;
-	let minX = Infinity;
-	let minY = Infinity;
-	let maxX = -Infinity;
-	let maxY = -Infinity;
-	for (const settlement of settlements) {
-		const r = settlementWorldRadius(settlement);
-		if (
-			settlement.x + r < x0 ||
-			settlement.x - r > x1 ||
-			settlement.y + r < y0 ||
-			settlement.y - r > y1
-		) {
-			continue;
-		}
-		minX = Math.min(minX, settlement.x - r);
-		minY = Math.min(minY, settlement.y - r);
-		maxX = Math.max(maxX, settlement.x + r);
-		maxY = Math.max(maxY, settlement.y + r);
-	}
-	if (!Number.isFinite(minX)) {
-		return chunkBounds;
-	}
-	if (minX >= x0 && maxX <= x1 && minY >= y0 && maxY <= y1) {
-		return chunkBounds;
-	}
-	const span = Math.max(maxX - minX, maxY - minY);
-	const cx = (minX + maxX) / 2;
-	const cy = (minY + maxY) / 2;
-	return { x0: cx - span / 2, y0: cy - span / 2, span };
+function settlementIntersectsBounds(
+	settlement: Settlement,
+	bounds: WorldBounds,
+): boolean {
+	const r = settlementWorldRadius(settlement);
+	return !(
+		settlement.x + r < bounds.x0 ||
+		settlement.x - r > bounds.x0 + bounds.span ||
+		settlement.y + r < bounds.y0 ||
+		settlement.y - r > bounds.y0 + bounds.span
+	);
 }
 
 export type SettlementDrawStyle = "marker" | "plan";
@@ -975,21 +944,13 @@ export function drawSettlements(
 	grid: TerrainGrid | null = null,
 ) {
 	const pxPerWorld = canvasWidth / bounds.span;
-	const pad = 28;
 
 	for (const kind of DRAW_ORDER) {
 		for (const settlement of settlements) {
 			if (settlement.kind !== kind) continue;
+			if (!settlementIntersectsBounds(settlement, bounds)) continue;
 			const sx = ((settlement.x - bounds.x0) / bounds.span) * canvasWidth;
 			const sy = ((settlement.y - bounds.y0) / bounds.span) * canvasHeight;
-			if (
-				sx < -pad ||
-				sy < -pad ||
-				sx > canvasWidth + pad ||
-				sy > canvasHeight + pad
-			) {
-				continue;
-			}
 
 			const isHovered =
 				hovered !== null && sameSettlement(hovered.settlement, settlement);

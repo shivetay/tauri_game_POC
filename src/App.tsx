@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ChunkId, RegionId } from "./api/world";
 import {
+	chunkWorldBounds,
 	DEFAULT_TERRAIN_PARAMS,
 	type TerrainParams,
 } from "./api/world";
@@ -15,7 +16,6 @@ import { useChunkMap } from "./hooks/useChunkMap";
 import { useRegionMap } from "./hooks/useRegionMap";
 import { useSettlements } from "./hooks/useSettlements";
 import { useWorldMap } from "./hooks/useWorldMap";
-import { viewBoundsForChunk } from "./map/settlements";
 import "./styles/MapScreen.css";
 import "./styles/App.css";
 
@@ -34,20 +34,11 @@ function App() {
 	const regionMap = useRegionMap(seed, terrainParams, selectedRegion);
 	const settlementMap = useSettlements(seed, terrainParams);
 	const chunkViewBounds = useMemo(() => {
-		if (!selectedRegion || !selectedChunk || settlementMap.loading) {
+		if (!selectedRegion || !selectedChunk) {
 			return null;
 		}
-		return viewBoundsForChunk(
-			selectedRegion,
-			selectedChunk,
-			settlementMap.settlements,
-		);
-	}, [
-		selectedRegion,
-		selectedChunk,
-		settlementMap.loading,
-		settlementMap.settlements,
-	]);
+		return chunkWorldBounds(selectedRegion, selectedChunk);
+	}, [selectedRegion, selectedChunk]);
 	const chunkMap = useChunkMap(
 		seed,
 		terrainParams,
