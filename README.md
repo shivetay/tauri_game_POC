@@ -1,46 +1,70 @@
 # map_tests
 
-Podgląd proceduralnej mapy świata (Tauri + React + Rust). Teren jest deterministyczny: **ten sam seed zawsze daje ten sam świat**.
+Podgląd proceduralnej mapy świata (Tauri 2 + React + Rust). Teren, rzeki, osady i ekologia liczone są w Rust; frontend tylko rysuje. **Ten sam seed i te same parametry zawsze dają ten sam świat.**
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-Wpisz seed w polu **Seed** i kliknij **Regenerate**. Klik na mapie otwiera region.
+Aplikacja działa wyłącznie w oknie Tauri — nie otwieraj `localhost:1420` w przeglądarce.
 
-## Jak dostać konkretny kształt świata
+## Szybki start
 
-Kształt lądu **nie zależy od znaczenia słowa** w seedzie. Generator liczy hash stringa i wybiera jeden z pięciu profili:
+1. Wpisz seed (nieujemna liczba całkowita) albo kliknij **Losuj seed**.
+2. Opcjonalnie ustaw suwaki (0–1) — zapisują się dopiero po **Regenerate**.
+3. Kliknij **Regenerate**.
+4. Klik w teren: świat → region → obszar. Przycisk wstecz wraca wyżej. Klik w osadę pokazuje opis, bez zmiany LOD.
 
-`hash(seed) % 5`
+Domyślny seed: `6` → profil **Ellipse**.
 
-Dlatego `wyspa` to archipelag, a `archipelago` (ang.) to jedna okrągła wyspa. Poniższe seedy są sprawdzone pod dany profil.
+## Seed i kształt lądu
 
-| Chcesz | Seed | Profil |
+Seed to `u64` / liczba. Profil kształtu: `seed % 6`.
+
+| `seed % 6` | Profil | Opis |
 | --- | --- | --- |
-| Pojedyncza okrągła wyspa | `eons-world-1`, `island`, `pangea` | Radial |
-| Wydłużona wyspa | `eons-world-2` (szeroka), `madagascar` (wyższa) | Ellipse |
-| Ląd przy krawędziach, woda w centrum | `eons-world-3`, `earth`, `staly-lad` | SquareBump |
-| Jedna wyspa z zatokami i półwyspami | `eons-world-4`, `iceland`, `coast` | Irregular |
-| Dużo wysp (archipelag) | `archipelag`, `duzo-wysp` (~5 wysp), `mapa-1` (~6 wysp) | Archipelago |
+| 0 | Radial | Jedna okrągła wyspa |
+| 1 | Ellipse | Jedna wyspa, spłaszczona w poziomie lub pionie |
+| 2 | SquareBump | Ląd przy krawędziach, woda w centrum |
+| 3 | Irregular | Jedna wyspa z zatokami i półwyspami |
+| 4 | Archipelago | 3–6 osobnych wysp |
+| 5 | Continents | 2–3 większe masywy |
 
-Domyślny seed aplikacji to `eons-world-1` (okrągła wyspa).
+Przykłady: `0` Radial, `6` Ellipse, `2` SquareBump, `11` Continents (`11 % 6 = 5`).
 
-## Co jeszcze zmienia seed
+Ten sam seed steruje też wysokością, wilgotnością, pasmami gór, wybrzeżem, rzekami, osadami i życiem. Suwaki tylko skalują siłę efektu (0 = wyłączone / minimalne, 1 = domyślna pełnia).
 
-Poza profilem ten sam string steruje szumem wysokości, wilgotnością (osobny hash `seed:moisture`) i detalami wybrzeża.
+| Suwak | Efekt |
+| --- | --- |
+| Ukształtowanie | Pasma gór i depresje |
+| Wilgotność | Rozrzut biomów |
+| Detal micro | Drobny relief w zbliżeniu |
+| Falistość terenu | Bazowe wzniesienia |
+| Powierzchnia lądu | Ile lądu względem oceanu |
+| Nieregularność brzegu | Zatoki i półwyspy |
 
-- **Ellipse** — proporcje wyspy (szersza vs wyższa) też wychodzą z seeda.
-- **Archipelago** — liczba wysp to 3–6, pozycje centrów są losowane z seeda (deterministycznie).
-- **Irregular** — linia brzegowa jest „rozejechana” szumem, więc zatoki różnią się między seedami tego samego profilu.
+## Mapa (LOD)
 
-Zmiana jednej litery może zmienić zarówno rzeźbę terenu, jak i cały profil kształtu.
+Świat: 512×512 jednostek. Region: 64×64. Obszar (chunk): 8×8.
 
-## Profile (krótko)
+| Poziom | Co widać |
+| --- | --- |
+| Świat | Biomy, główne drogi, miasta i miasteczka |
+| Region | Biomy, wszystkie osady, drogi, warstwa siedlisk |
+| Obszar | Biomy, obrys miasta z dzielnicami, drogi z mostami, flora i fauna |
 
-- **Radial** — okrągła wyspa na środku mapy, ocean dookoła.
-- **Ellipse** — jedna wyspa, spłaszczona w poziomie lub pionie.
-- **SquareBump** — ląd przy brzegach kwadratu, otwarte morze w centrum.
-- **Irregular** — jedna wyspa, ale z zatokami, cyplami i nierównym wybrzeżem.
-- **Archipelago** — kilka osobnych wysp (unia małych falloffów).
+## Warstwy świata
+
+- **Teren / biomy** — wysokość (m, poziom morza = 0), wilgotność, klasyfikacja biomu (woda, piasek, pustynia, trawa, las, góry, śnieg itd.).
+- **Rzeki** — sieć źródła → spływ → dopływy / delty / jeziora; koryto wycinane w teren (widać jako wodę); brzegi wilgotniejsze; wpływ na lokalizację osad i mosty na drogach.
+- **Osady** — Hamlet / Village / Town / City (polskie nazwy, populacja); większe mają dzielnice i ulice.
+- **Drogi** — Highway / Secondary / Local, nawierzchnia i mosty nad rzekami.
+- **Ekologia** — w regionie: potencjał siedliska; w obszarze: konkretne gatunki flory i fauny.
+
+## Architektura (skrót)
+
+- Generacja: `src-tauri/src/world/`
+- Komendy Tauri: `src-tauri/src/lib.rs`
+- Wywołania z UI: `src/api/world.ts`
+- Widoki LOD: `GlobalMapView` → `RegionMapView` → `ChunkMapView`
