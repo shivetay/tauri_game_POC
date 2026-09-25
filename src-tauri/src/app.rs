@@ -1,10 +1,14 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Instant;
 
 use eframe::egui::{self, Color32, Sense, TextureHandle, TextureOptions, Vec2};
 use egui::{pos2, Align2, FontId, RichText};
 
 use crate::colors::BIOMES;
+use crate::game_loop::GameLoop;
+use crate::game_time::SPEED_MULTIPLIERS;
+use crate::perf::PerfStats;
 use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
@@ -165,6 +169,9 @@ pub struct MapApp {
     loading: bool,
     request_id: u64,
     lod_cache: LodCache,
+    game: GameLoop,
+    last_frame: Instant,
+    perf: PerfStats,
     tx: Sender<GenRequest>,
     rx: Receiver<GenResult>,
 }
@@ -204,6 +211,9 @@ impl MapApp {
             loading: false,
             request_id: 0,
             lod_cache: LodCache::default(),
+            game: GameLoop::new(),
+            last_frame: Instant::now(),
+            perf: PerfStats::new(),
             tx: tx_req,
             rx: rx_res,
         };
@@ -275,10 +285,14 @@ impl MapApp {
     fn apply_seed_and_params(&mut self) {
         match self.draft_seed.trim().parse::<u64>() {
             Ok(seed) => {
+                let seed_changed = seed != self.seed;
                 self.seed = seed;
                 self.params = self.draft_params;
                 self.seed_error = None;
                 self.lod = LodLevel::Global;
+                if seed_changed {
+                    self.game.reset_time();
+                }
                 self.queue_generate(true);
             }
             Err(_) => {
@@ -293,6 +307,7 @@ impl MapApp {
         self.seed = seed;
         self.seed_error = None;
         self.lod = LodLevel::Global;
+        self.game.reset_time();
         self.queue_generate(true);
     }
 
@@ -391,6 +406,87 @@ impl MapApp {
             self.selected_hit = None;
             self.rebuild_texture(ctx);
         }
+    }
+
+    fn tick_simulation(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f64();
+        self.last_frame = now;
+        // Clock starts only once the map is ready (not while generating).
+        if !self.loading {
+            self.game.tick(dt);
+        }
+    }
+
+    fn ui_game_clock(&mut self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Czas gry").strong());
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(self.game.time().format_label())
+                        .monospace()
+                        .size(16.0),
+                );
+                let status = if self.game.paused() {
+                    "Pauza".to_string()
+                } else {
+                    format!("×{:.0}", self.game.speed_mult())
+                };
+                ui.label(RichText::new(status).small());
+            });
+
+            ui.add_space(8.0);
+            let pause_label = if self.game.paused() { "Wznów" } else { "Pauza" };
+            if ui
+                .add(egui::Button::new(pause_label).min_size(Vec2::new(ui.available_width(), 0.0)))
+                .clicked()
+            {
+                self.game.toggle_pause();
+            }
+
+            ui.add_space(4.0);
+            ui.label(RichText::new("Prędkość").small());
+            ui.horizontal(|ui| {
+                for &mult in &SPEED_MULTIPLIERS {
+                    let selected =
+                        !self.game.paused() && (self.game.speed_mult() - mult).abs() < f64::EPSILON;
+                    if ui
+                        .selectable_label(selected, format!("×{:.0}", mult))
+                        .clicked()
+                    {
+                        self.game.set_speed(mult);
+                    }
+                }
+            });
+
+            ui.add_space(4.0);
+            if ui
+                .add(egui::Button::new("+1 h").min_size(Vec2::new(ui.available_width(), 0.0)))
+                .clicked()
+            {
+                self.game.skip_hours(1);
+            }
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("Wydajność").strong());
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("FPS  {:.0}", self.perf.fps()))
+                        .monospace()
+                        .size(15.0),
+                );
+                ui.label(
+                    RichText::new(format!("CPU  {:.0}%", self.perf.cpu_percent()))
+                        .monospace()
+                        .size(15.0),
+                );
+            });
+        });
     }
 
     fn ui_controls(&mut self, ui: &mut egui::Ui) {
@@ -721,15 +817,23 @@ impl MapApp {
 impl eframe::App for MapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_results(ctx);
-        if self.loading {
-            ctx.request_repaint();
-        }
+        self.tick_simulation();
+        self.perf.tick();
+        // Keep repainting so the clock / FPS tick even when the map is idle.
+        ctx.request_repaint();
 
         egui::SidePanel::left("controls")
             .resizable(true)
             .default_width(280.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| self.ui_controls(ui));
+            });
+
+        egui::SidePanel::right("game_clock")
+            .resizable(false)
+            .exact_width(176.0)
+            .show(ctx, |ui| {
+                self.ui_game_clock(ui);
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {

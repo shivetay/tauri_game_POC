@@ -1,6 +1,9 @@
 pub mod app;
 pub mod colors;
 pub mod ecology_draw;
+pub mod game_loop;
+pub mod game_time;
+pub mod perf;
 pub mod render;
 pub mod settlements_draw;
 pub mod world;
