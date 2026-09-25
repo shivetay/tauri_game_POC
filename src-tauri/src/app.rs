@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
@@ -12,7 +13,7 @@ use crate::perf::PerfStats;
 use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
-use crate::render::{biome_at_pixel, compose_map_image, ComposeInput};
+use crate::render::{compose_map_image, ComposeInput};
 use crate::settlements_draw::{
     district_info, format_settlement_label, hit_settlement, road_info, settlement_info, RoadDetail,
     SettlementDrawStyle, SettlementHit, WorldBounds, DISTRICT_KIND_ORDER, ROAD_KIND_ORDER,
@@ -28,10 +29,54 @@ use crate::world::grid::{
 };
 use crate::world::sampler::TerrainSampler;
 use crate::world::settlement::{
-    generate_sampled as generate_settlements_sampled, Road, Settlement, SettlementKind,
+    generate_sampled as generate_settlements_sampled, Road, RoadKind, Settlement, SettlementKind,
     SettlementMap,
 };
 use crate::world::types::{ChunkId, RegionId, TerrainGrid, TileType};
+
+/// Average on-foot speed: 5 km/h with 1 world unit = 1 km.
+const WALK_WU_PER_GAME_HOUR: f32 = 5.0;
+/// Distance below which the player is considered "already at" a destination.
+const AT_PLACE_EPS: f32 = 0.35;
+/// Vision / fog radius in world units (km).
+const VISION_RADIUS: f32 = 3.0;
+/// How far ahead to look for a road when picking a cardinal direction.
+const ROAD_LOOK_AHEAD: f32 = 12.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cardinal {
+    North,
+    South,
+    East,
+    West,
+}
+
+impl Cardinal {
+    const ALL: [Cardinal; 4] = [
+        Cardinal::North,
+        Cardinal::South,
+        Cardinal::East,
+        Cardinal::West,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::North => "Północ",
+            Self::South => "Południe",
+            Self::East => "Wschód",
+            Self::West => "Zachód",
+        }
+    }
+
+    fn delta(self) -> (f32, f32) {
+        match self {
+            Self::North => (0.0, -1.0),
+            Self::South => (0.0, 1.0),
+            Self::West => (-1.0, 0.0),
+            Self::East => (1.0, 0.0),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LodLevel {
@@ -63,17 +108,24 @@ impl LodLevel {
         }
     }
 
-    fn idle_label(self) -> String {
+    fn idle_label(self, has_player_spawn: bool) -> String {
         match self {
             Self::Global => "Mapa świata — kliknij region · kliknij miasto po info".to_string(),
             Self::Region(r) => {
                 format!("Region ({}, {}) — kliknij obszar · kliknij miasto po info", r.rx, r.ry)
             }
             Self::Chunk { chunk, .. } => {
-                format!(
-                    "Obszar ({}, {}) — kliknij biom/miasto lub gatunki",
-                    chunk.cx, chunk.cy
-                )
+                if has_player_spawn {
+                    format!(
+                        "Obszar ({}, {}) — kliknij ląd, by iść · biom/miasto",
+                        chunk.cx, chunk.cy
+                    )
+                } else {
+                    format!(
+                        "Obszar ({}, {}) — kliknij ląd lub osadę (Spawn) · biom/gatunki",
+                        chunk.cx, chunk.cy
+                    )
+                }
             }
         }
     }
@@ -166,6 +218,18 @@ pub struct MapApp {
     texture: Option<TextureHandle>,
     selected_info: Option<String>,
     selected_hit: Option<SettlementHit>,
+    /// Land cell selected on Chunk LOD; enables the Spawn button.
+    pending_spawn: Option<(f32, f32)>,
+    /// Confirmed player start (fixed); enables gameplay after Spawn.
+    player_spawn: Option<(f32, f32)>,
+    /// Current marker position.
+    player_pos: Option<(f32, f32)>,
+    /// Walk destination.
+    move_target: Option<(f32, f32)>,
+    /// Settlements the player has visited (floor coords key).
+    known_places: HashSet<(i32, i32)>,
+    /// Chunks the player has entered — stay permanently visible on the map.
+    known_chunks: HashSet<(RegionId, ChunkId)>,
     loading: bool,
     request_id: u64,
     lod_cache: LodCache,
@@ -208,6 +272,12 @@ impl MapApp {
             texture: None,
             selected_info: None,
             selected_hit: None,
+            pending_spawn: None,
+            player_spawn: None,
+            player_pos: None,
+            move_target: None,
+            known_places: HashSet::new(),
+            known_chunks: HashSet::new(),
             loading: false,
             request_id: 0,
             lod_cache: LodCache::default(),
@@ -263,6 +333,12 @@ impl MapApp {
     fn queue_generate(&mut self, refresh_settlements: bool) {
         if refresh_settlements {
             self.lod_cache.clear();
+            self.pending_spawn = None;
+            self.player_spawn = None;
+            self.player_pos = None;
+            self.move_target = None;
+            self.known_places.clear();
+            self.known_chunks.clear();
         }
         self.request_id += 1;
         self.loading = true;
@@ -357,6 +433,78 @@ impl MapApp {
         }
     }
 
+    fn in_vision(&self, wx: f32, wy: f32) -> bool {
+        let Some(pos) = self.player_pos else {
+            return true;
+        };
+        let dx = wx - pos.0;
+        let dy = wy - pos.1;
+        dx * dx + dy * dy <= VISION_RADIUS * VISION_RADIUS
+    }
+
+    /// Visible on the map: vision circle or an explored chunk.
+    fn world_revealed(&self, wx: f32, wy: f32, config: &WorldConfig) -> bool {
+        if self.player_spawn.is_none() {
+            return true;
+        }
+        if self.in_vision(wx, wy) {
+            return true;
+        }
+        world_to_chunk(wx, wy, config)
+            .map(|(r, c)| self.known_chunks.contains(&(r, c)))
+            .unwrap_or(false)
+    }
+
+    fn explore_player_chunk(&mut self, config: &WorldConfig) -> bool {
+        let Some(pos) = self.player_pos else {
+            return false;
+        };
+        let Some(ch) = world_to_chunk(pos.0, pos.1, config) else {
+            return false;
+        };
+        self.known_chunks.insert(ch)
+    }
+
+    fn known_bounds_list(&self, config: &WorldConfig) -> Vec<WorldBounds> {
+        self.known_chunks
+            .iter()
+            .map(|&(region, chunk)| LodLevel::Chunk { region, chunk }.bounds(config))
+            .collect()
+    }
+
+    fn place_key(x: f32, y: f32) -> (i32, i32) {
+        (x.floor() as i32, y.floor() as i32)
+    }
+
+    fn is_known_place(&self, x: f32, y: f32) -> bool {
+        self.known_places.contains(&Self::place_key(x, y))
+    }
+
+    /// Mark settlements the player is currently standing at as visited.
+    fn update_visited_places(&mut self) -> bool {
+        let Some(pos) = self.player_pos else {
+            return false;
+        };
+        let Some(map) = &self.settlements else {
+            return false;
+        };
+        let mut changed = false;
+        for s in &map.settlements {
+            let r = s.radius.max(AT_PLACE_EPS);
+            let dx = s.x - pos.0;
+            let dy = s.y - pos.1;
+            if dx * dx + dy * dy <= r * r {
+                changed |= self.known_places.insert(Self::place_key(s.x, s.y));
+            }
+        }
+        changed
+    }
+
+    fn clamp_to_world(&self, wx: f32, wy: f32, config: &WorldConfig) -> (f32, f32) {
+        let max = (config.world_width as f32 - 0.05).max(0.05);
+        (wx.clamp(0.05, max), wy.clamp(0.05, max))
+    }
+
     fn rebuild_texture(&mut self, ctx: &egui::Context) {
         let Some(grid) = &self.grid else {
             return;
@@ -365,6 +513,15 @@ impl MapApp {
         let chunks_per_side = (config.region_size / config.chunk_size).max(1);
         let cell_size = grid.width as f32 / chunks_per_side as f32;
         let settlements = self.view_settlements();
+        let explored = self.known_bounds_list(&config);
+        let (fog_explored, fog_vision) = if self.player_spawn.is_some() {
+            (
+                Some(explored.as_slice()),
+                self.player_pos.map(|(x, y)| (x, y, VISION_RADIUS)),
+            )
+        } else {
+            (None, None)
+        };
         let image = compose_map_image(ComposeInput {
             grid,
             cell_size,
@@ -377,8 +534,223 @@ impl MapApp {
             habitat: self.habitat.as_ref(),
             life: self.life.as_ref(),
             hovered: self.selected_hit.as_ref(),
+            player_spawn: self.player_pos.or(self.player_spawn),
+            fog_explored,
+            fog_vision,
         });
         self.texture = Some(ctx.load_texture("terrain", image, TextureOptions::NEAREST));
+    }
+
+    fn confirm_spawn(&mut self, ctx: &egui::Context) {
+        let Some(pos) = self.pending_spawn else {
+            return;
+        };
+        self.player_spawn = Some(pos);
+        self.player_pos = Some(pos);
+        self.move_target = None;
+        self.pending_spawn = None;
+        self.known_places.clear();
+        self.known_chunks.clear();
+        let config = self.config();
+        self.explore_player_chunk(&config);
+        self.update_visited_places();
+        self.selected_info = Some(format!(
+            "Start gracza: ({:.0}, {:.0}) — kliknij ląd, by iść",
+            pos.0, pos.1
+        ));
+        self.rebuild_texture(ctx);
+    }
+
+    fn set_walk_target(&mut self, wx: f32, wy: f32, ctx: &egui::Context) {
+        let config = self.config();
+        let target = self.clamp_to_world(wx, wy, &config);
+        if let Some(pos) = self.player_pos {
+            if player_at(pos, target) {
+                self.selected_info = Some(format!(
+                    "Już tu jesteś ({:.0}, {:.0})",
+                    target.0, target.1
+                ));
+                return;
+            }
+        }
+        self.move_target = Some(target);
+        self.selected_info = Some(format!(
+            "W drodze do ({:.0}, {:.0})",
+            target.0, target.1
+        ));
+        self.rebuild_texture(ctx);
+    }
+
+    fn focus_player(&mut self, ctx: &egui::Context) {
+        let Some(pos) = self.player_pos else {
+            return;
+        };
+        let config = self.config();
+        let Some((region, chunk)) = world_to_chunk(pos.0, pos.1, &config) else {
+            return;
+        };
+        self.selected_hit = None;
+        self.selected_info = Some(format!("Gracz: ({:.1}, {:.1})", pos.0, pos.1));
+        self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
+    }
+
+    fn ui_travel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.player_spawn.is_none() {
+            return;
+        }
+        let config = self.config();
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Podróż").strong());
+
+        ui.label(RichText::new("Znane miejsca").small());
+        let places = known_place_dests(&self.settlements, &self.known_places, &config);
+        if places.is_empty() {
+            ui.label(RichText::new("Odwiedź osadę, by ją zapamiętać").small().weak());
+        } else {
+            for dest in &places {
+                let here = self
+                    .player_pos
+                    .map(|p| player_at(p, (dest.x, dest.y)))
+                    .unwrap_or(false);
+                let label = if here {
+                    format!("{} (tu)", dest.label)
+                } else {
+                    dest.label.clone()
+                };
+                if ui
+                    .add_enabled(
+                        !here && !self.loading,
+                        egui::Button::new(label).min_size(Vec2::new(ui.available_width(), 0.0)),
+                    )
+                    .clicked()
+                {
+                    self.go_to_destination(dest.x, dest.y, dest.region, dest.chunk, ctx);
+                }
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.label(RichText::new("Kierunki").small());
+        for dir in Cardinal::ALL {
+            if ui
+                .add_enabled(
+                    !self.loading,
+                    egui::Button::new(dir.label()).min_size(Vec2::new(ui.available_width(), 0.0)),
+                )
+                .clicked()
+            {
+                self.walk_toward_cardinal(dir, ctx);
+            }
+        }
+    }
+
+    /// Prefer a road in that direction; otherwise walk a short step that way.
+    fn walk_toward_cardinal(&mut self, dir: Cardinal, ctx: &egui::Context) {
+        let Some(pos) = self.player_pos else {
+            return;
+        };
+        let config = self.config();
+        if let Some(target) = road_target_in_direction(pos, dir, self.roads()) {
+            self.set_walk_target(target.0, target.1, ctx);
+            return;
+        }
+        let (dx, dy) = dir.delta();
+        let step = VISION_RADIUS * 1.5;
+        let target = self.clamp_to_world(pos.0 + dx * step, pos.1 + dy * step, &config);
+        self.set_walk_target(target.0, target.1, ctx);
+    }
+
+    fn go_to_destination(
+        &mut self,
+        wx: f32,
+        wy: f32,
+        region: RegionId,
+        chunk: ChunkId,
+        ctx: &egui::Context,
+    ) {
+        if !self.is_known_place(wx, wy) {
+            self.selected_info = Some("Nieznane miejsce — najpierw je odwiedź.".to_string());
+            return;
+        }
+        let config = self.config();
+        let player_chunk = self
+            .player_pos
+            .and_then(|(x, y)| world_to_chunk(x, y, &config));
+        if player_chunk != Some((region, chunk)) {
+            self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
+        }
+        self.set_walk_target(wx, wy, ctx);
+    }
+
+    /// Move on foot using in-game seconds; fog follows; camera follows chunk changes.
+    fn advance_movement(&mut self, game_secs: f64, ctx: &egui::Context) {
+        if game_secs <= 0.0 || !game_secs.is_finite() {
+            return;
+        }
+        let (Some(pos), Some(target)) = (self.player_pos, self.move_target) else {
+            return;
+        };
+        let config = self.config();
+        let speed = WALK_WU_PER_GAME_HOUR / 3600.0;
+        let step = speed * game_secs as f32;
+        let dx = target.0 - pos.0;
+        let dy = target.1 - pos.1;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let (nx, ny) = if dist <= step || dist < 1e-4 {
+            self.move_target = None;
+            self.selected_info = Some(format!("Na miejscu ({:.0}, {:.0})", target.0, target.1));
+            target
+        } else {
+            let t = step / dist;
+            (pos.0 + dx * t, pos.1 + dy * t)
+        };
+        let prev_chunk = world_to_chunk(pos.0, pos.1, &config);
+        self.player_pos = Some(self.clamp_to_world(nx, ny, &config));
+        let config = self.config();
+        let explored = self.explore_player_chunk(&config);
+        let visited = self.update_visited_places();
+        if visited {
+            self.selected_info = Some("Odwiedzono osadę — dodano do znanych miejsc.".to_string());
+        } else if explored {
+            self.selected_info = Some("Odkryto nowy obszar.".to_string());
+        }
+        self.maybe_follow_player_chunk(prev_chunk, ctx);
+        self.rebuild_texture(ctx);
+    }
+
+    /// When the player crosses into another chunk while in Chunk LOD, follow them.
+    fn maybe_follow_player_chunk(
+        &mut self,
+        prev_chunk: Option<(RegionId, ChunkId)>,
+        ctx: &egui::Context,
+    ) {
+        let Some(pos) = self.player_pos else {
+            return;
+        };
+        let LodLevel::Chunk { .. } = self.lod else {
+            return;
+        };
+        let config = self.config();
+        let Some(cur) = world_to_chunk(pos.0, pos.1, &config) else {
+            return;
+        };
+        if prev_chunk == Some(cur) {
+            return;
+        }
+        let status = self.selected_info.clone();
+        let hit = self.selected_hit;
+        self.set_lod(
+            LodLevel::Chunk {
+                region: cur.0,
+                chunk: cur.1,
+            },
+            ctx,
+        );
+        self.selected_info = status;
+        self.selected_hit = hit;
     }
 
     fn poll_results(&mut self, ctx: &egui::Context) {
@@ -408,17 +780,18 @@ impl MapApp {
         }
     }
 
-    fn tick_simulation(&mut self) {
+    fn tick_simulation(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
         // Clock starts only once the map is ready (not while generating).
         if !self.loading {
-            self.game.tick(dt);
+            let game_secs = self.game.tick(dt);
+            self.advance_movement(game_secs, ctx);
         }
     }
 
-    fn ui_game_clock(&mut self, ui: &mut egui::Ui) {
+    fn ui_game_clock(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.vertical(|ui| {
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
@@ -467,6 +840,58 @@ impl MapApp {
                 .clicked()
             {
                 self.game.skip_hours(1);
+                self.advance_movement(3600.0, ctx);
+            }
+
+            if let Some((wx, wy)) = self.pending_spawn {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Start gracza").strong());
+                    ui.label(
+                        RichText::new(format!("({:.0}, {:.0})", wx, wy))
+                            .monospace()
+                            .small(),
+                    );
+                });
+                ui.add_space(4.0);
+                if ui
+                    .add_enabled(
+                        !self.loading,
+                        egui::Button::new("Spawn").min_size(Vec2::new(ui.available_width(), 0.0)),
+                    )
+                    .clicked()
+                {
+                    self.confirm_spawn(ctx);
+                }
+            } else if let Some((wx, wy)) = self.player_pos {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Gracz").strong());
+                    ui.label(
+                        RichText::new(format!("({:.1}, {:.1})", wx, wy))
+                            .monospace()
+                            .small(),
+                    );
+                    if self.move_target.is_some() {
+                        ui.label(RichText::new("w drodze · piechota").small());
+                    } else {
+                        ui.label(RichText::new("piechota 5 km/h").small());
+                    }
+                });
+                ui.add_space(4.0);
+                if ui
+                    .add(
+                        egui::Button::new("Ja").min_size(Vec2::new(ui.available_width(), 0.0)),
+                    )
+                    .clicked()
+                {
+                    self.focus_player(ctx);
+                }
+                self.ui_travel(ui, ctx);
             }
 
             ui.add_space(12.0);
@@ -688,13 +1113,25 @@ impl MapApp {
             self.settlement_style(),
         ) {
             let settlement = &settlements[hit.settlement_index];
-            let district = hit
-                .district_index
-                .and_then(|di| settlement.districts.get(di));
-            self.selected_info = Some(format_settlement_label(settlement, district));
-            self.selected_hit = Some(hit);
-            self.rebuild_texture(ctx);
-            return;
+            if self.world_revealed(settlement.x, settlement.y, &config) {
+                let district = hit
+                    .district_index
+                    .and_then(|di| settlement.districts.get(di));
+                self.selected_info = Some(format_settlement_label(settlement, district));
+                self.selected_hit = Some(hit);
+                if matches!(self.lod, LodLevel::Chunk { .. }) {
+                    if self.player_spawn.is_none() {
+                        self.pending_spawn = Some((settlement.x, settlement.y));
+                        self.rebuild_texture(ctx);
+                    } else {
+                        self.set_walk_target(settlement.x, settlement.y, ctx);
+                    }
+                    return;
+                }
+                self.rebuild_texture(ctx);
+                return;
+            }
+            // Settlement under fog — ignore hit and continue.
         }
 
         let chunks_per_side = (config.region_size / config.chunk_size).max(1);
@@ -704,22 +1141,23 @@ impl MapApp {
 
         match self.lod {
             LodLevel::Global => {
-                self.set_lod(LodLevel::Region(RegionId { rx: cx, ry: cy }), ctx);
+                let region = RegionId { rx: cx, ry: cy };
+                self.set_lod(LodLevel::Region(region), ctx);
             }
             LodLevel::Region(region) => {
-                self.set_lod(
-                    LodLevel::Chunk {
-                        region,
-                        chunk: ChunkId { cx, cy },
-                    },
-                    ctx,
-                );
+                let chunk = ChunkId { cx, cy };
+                self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
             }
             LodLevel::Chunk { .. } => {
                 let mut parts = Vec::new();
+                let mut land_cell: Option<(f32, f32)> = None;
                 if let Some(grid) = &self.grid {
-                    if let Some(biome) = biome_at_pixel(grid, px, py, cw, ch) {
+                    if let Some((wx, wy, biome)) = cell_world_at_pixel(grid, &bounds, px, py, cw, ch)
+                    {
                         parts.push(format!("Biom: {}", biome_label(biome)));
+                        if is_land_biome(biome) {
+                            land_cell = Some((wx, wy));
+                        }
                     }
                 }
                 if let Some(life) = &self.life {
@@ -730,12 +1168,29 @@ impl MapApp {
                     }
                 }
                 self.selected_hit = None;
-                self.selected_info = Some(if parts.is_empty() {
-                    self.lod.idle_label()
+                if self.player_spawn.is_none() {
+                    self.pending_spawn = land_cell;
+                    self.selected_info = Some(if parts.is_empty() {
+                        self.lod.idle_label(false)
+                    } else {
+                        parts.join(" · ")
+                    });
+                    self.rebuild_texture(ctx);
+                } else if let Some((wx, wy)) = land_cell {
+                    if self.world_revealed(wx, wy, &config) {
+                        self.set_walk_target(wx, wy, ctx);
+                    } else {
+                        self.selected_info =
+                            Some("Poza zasięgiem widzenia.".to_string());
+                    }
                 } else {
-                    parts.join(" · ")
-                });
-                self.rebuild_texture(ctx);
+                    self.selected_info = Some(if parts.is_empty() {
+                        self.lod.idle_label(true)
+                    } else {
+                        parts.join(" · ")
+                    });
+                    self.rebuild_texture(ctx);
+                }
             }
         }
     }
@@ -753,7 +1208,7 @@ impl MapApp {
             let status = self
                 .selected_info
                 .clone()
-                .unwrap_or_else(|| self.lod.idle_label());
+                .unwrap_or_else(|| self.lod.idle_label(self.player_spawn.is_some()));
             ui.label(status);
         });
 
@@ -783,6 +1238,12 @@ impl MapApp {
             egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE,
         );
+
+        {
+            let config = self.config();
+            let world_span = self.lod.bounds(&config).span;
+            draw_map_scale(ui.painter(), rect, world_span);
+        }
 
         if self.loading {
             ui.painter()
@@ -817,7 +1278,7 @@ impl MapApp {
 impl eframe::App for MapApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_results(ctx);
-        self.tick_simulation();
+        self.tick_simulation(ctx);
         self.perf.tick();
         // Keep repainting so the clock / FPS tick even when the map is idle.
         ctx.request_repaint();
@@ -831,9 +1292,11 @@ impl eframe::App for MapApp {
 
         egui::SidePanel::right("game_clock")
             .resizable(false)
-            .exact_width(176.0)
+            .exact_width(200.0)
             .show(ctx, |ui| {
-                self.ui_game_clock(ui);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.ui_game_clock(ui, ctx);
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -890,6 +1353,177 @@ fn generate_job(req: GenRequest) -> GenResult {
     }
 }
 
+fn nice_scale_km(raw_km: f32) -> f32 {
+    if !raw_km.is_finite() || raw_km <= 0.0 {
+        return 1.0;
+    }
+    let exp = raw_km.log10().floor();
+    let base = 10f32.powf(exp);
+    let n = raw_km / base;
+    let nice = if n < 1.5 {
+        1.0
+    } else if n < 3.5 {
+        2.0
+    } else if n < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * base
+}
+
+/// Map scale bar in the bottom-right corner (1 world unit = 1 km).
+fn draw_map_scale(painter: &egui::Painter, map_rect: egui::Rect, world_span_km: f32) {
+    if world_span_km <= 0.0 || map_rect.width() <= 1.0 {
+        return;
+    }
+    let px_per_km = map_rect.width() / world_span_km;
+    let nice_km = nice_scale_km(80.0 / px_per_km);
+    let bar_w = (nice_km * px_per_km).clamp(24.0, map_rect.width() * 0.45);
+    let margin = 10.0;
+    let label = if nice_km >= 1.0 {
+        format!("{:.0} km", nice_km)
+    } else {
+        format!("{:.0} m", nice_km * 1000.0)
+    };
+
+    let x1 = map_rect.right() - margin;
+    let x0 = x1 - bar_w;
+    let y_bar = map_rect.bottom() - margin - 4.0;
+    let y_top = y_bar - 8.0;
+
+    let bg = egui::Rect::from_min_max(
+        pos2(x0 - 6.0, y_top - 16.0),
+        pos2(x1 + 6.0, map_rect.bottom() - margin + 4.0),
+    );
+    painter.rect_filled(
+        bg,
+        3.0,
+        Color32::from_rgba_unmultiplied(0, 0, 0, 140),
+    );
+
+    let white = Color32::WHITE;
+    let stroke = egui::Stroke::new(1.5, white);
+    painter.line_segment([pos2(x0, y_bar), pos2(x1, y_bar)], stroke);
+    painter.line_segment([pos2(x0, y_top), pos2(x0, y_bar)], stroke);
+    painter.line_segment([pos2(x1, y_top), pos2(x1, y_bar)], stroke);
+    // Mid tick
+    let xm = (x0 + x1) * 0.5;
+    painter.line_segment([pos2(xm, y_bar - 4.0), pos2(xm, y_bar)], stroke);
+
+    painter.text(
+        pos2((x0 + x1) * 0.5, y_top - 2.0),
+        Align2::CENTER_BOTTOM,
+        label,
+        FontId::proportional(12.0),
+        white,
+    );
+}
+
+fn player_at(pos: (f32, f32), target: (f32, f32)) -> bool {
+    let dx = pos.0 - target.0;
+    let dy = pos.1 - target.1;
+    dx * dx + dy * dy <= AT_PLACE_EPS * AT_PLACE_EPS
+}
+
+fn world_to_chunk(wx: f32, wy: f32, config: &WorldConfig) -> Option<(RegionId, ChunkId)> {
+    if wx < 0.0 || wy < 0.0 {
+        return None;
+    }
+    let w = config.world_width as f32;
+    if wx >= w || wy >= w {
+        return None;
+    }
+    let rs = config.region_size;
+    let cs = config.chunk_size;
+    if rs == 0 || cs == 0 {
+        return None;
+    }
+    let ix = wx.floor() as u32;
+    let iy = wy.floor() as u32;
+    let rx = ix / rs;
+    let ry = iy / rs;
+    let cx = (ix % rs) / cs;
+    let cy = (iy % rs) / cs;
+    Some((RegionId { rx, ry }, ChunkId { cx, cy }))
+}
+
+struct TravelDest {
+    label: String,
+    x: f32,
+    y: f32,
+    region: RegionId,
+    chunk: ChunkId,
+}
+
+fn known_place_dests(
+    map: &Option<SettlementMap>,
+    known: &HashSet<(i32, i32)>,
+    config: &WorldConfig,
+) -> Vec<TravelDest> {
+    let Some(map) = map else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for s in &map.settlements {
+        let key = (s.x.floor() as i32, s.y.floor() as i32);
+        if !known.contains(&key) {
+            continue;
+        }
+        let Some((region, chunk)) = world_to_chunk(s.x, s.y, config) else {
+            continue;
+        };
+        let kind = settlement_info(s.kind).label;
+        out.push(TravelDest {
+            label: format!("{} · {}", s.name, kind),
+            x: s.x,
+            y: s.y,
+            region,
+            chunk,
+        });
+    }
+    out.sort_by(|a, b| a.label.cmp(&b.label));
+    out
+}
+
+/// Best road point ahead in a cardinal direction (prefers highways).
+fn road_target_in_direction(
+    pos: (f32, f32),
+    dir: Cardinal,
+    roads: &[Road],
+) -> Option<(f32, f32)> {
+    let (dx, dy) = dir.delta();
+    let mut best: Option<(f32, f32, f32)> = None; // score (lower better), x, y
+    for road in roads {
+        let kind_penalty = match road.kind {
+            RoadKind::Highway => 0.0,
+            RoadKind::Secondary => 40.0,
+            RoadKind::Local => 90.0,
+        };
+        for p in &road.points {
+            let vx = p.x - pos.0;
+            let vy = p.y - pos.1;
+            let dist = (vx * vx + vy * vy).sqrt();
+            if dist < 0.6 || dist > ROAD_LOOK_AHEAD {
+                continue;
+            }
+            let along = vx * dx + vy * dy;
+            if along < 0.5 {
+                continue;
+            }
+            let lateral = (vx * dy - vy * dx).abs();
+            if lateral > along * 0.9 {
+                continue;
+            }
+            let score = dist + lateral * 1.5 + kind_penalty;
+            if best.map(|(s, _, _)| score < s).unwrap_or(true) {
+                best = Some((score, p.x, p.y));
+            }
+        }
+    }
+    best.map(|(_, x, y)| (x, y))
+}
+
 fn biome_label(biome: TileType) -> &'static str {
     for (tile, info) in BIOMES {
         if *tile == biome {
@@ -897,6 +1531,34 @@ fn biome_label(biome: TileType) -> &'static str {
         }
     }
     "?"
+}
+
+fn is_land_biome(biome: TileType) -> bool {
+    !matches!(biome, TileType::Water | TileType::DeepWater)
+}
+
+/// Grid cell under the click → world center of that cell + biome.
+fn cell_world_at_pixel(
+    grid: &TerrainGrid,
+    bounds: &WorldBounds,
+    px: f32,
+    py: f32,
+    canvas_width: f32,
+    canvas_height: f32,
+) -> Option<(f32, f32, TileType)> {
+    if grid.width == 0 || grid.height == 0 || grid.cells.is_empty() {
+        return None;
+    }
+    let gx = ((px / canvas_width) * grid.width as f32)
+        .floor()
+        .clamp(0.0, (grid.width - 1) as f32) as usize;
+    let gy = ((py / canvas_height) * grid.height as f32)
+        .floor()
+        .clamp(0.0, (grid.height - 1) as f32) as usize;
+    let biome = grid.cells.get(gy * grid.width as usize + gx)?.biome;
+    let wx = bounds.x0 + ((gx as f32 + 0.5) / grid.width as f32) * bounds.span;
+    let wy = bounds.y0 + ((gy as f32 + 0.5) / grid.height as f32) * bounds.span;
+    Some((wx, wy, biome))
 }
 
 fn swatch(ui: &mut egui::Ui, rgb: [u8; 3]) {

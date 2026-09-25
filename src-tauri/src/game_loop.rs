@@ -29,14 +29,18 @@ impl GameLoop {
     }
 
     /// Advance simulation by real-time `dt` seconds (respects pause + speed).
-    pub fn tick(&mut self, dt: f64) {
+    /// Returns in-game seconds advanced this tick (0 when paused / invalid).
+    pub fn tick(&mut self, dt: f64) -> f64 {
         if !dt.is_finite() || dt <= 0.0 {
-            return;
+            return 0.0;
         }
         let scale = effective_time_scale(self.paused, self.speed_mult);
-        if scale > 0.0 {
-            self.time.advance(dt * scale);
+        if scale <= 0.0 {
+            return 0.0;
         }
+        let game_secs = dt * scale;
+        self.time.advance(game_secs);
+        game_secs
     }
 
     pub fn time(&self) -> GameTime {

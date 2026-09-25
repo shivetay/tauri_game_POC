@@ -162,6 +162,103 @@ pub struct ComposeInput<'a> {
     pub habitat: Option<&'a RegionEcologyMap>,
     pub life: Option<&'a ChunkEcologyMap>,
     pub hovered: Option<&'a SettlementHit>,
+    /// World-space player marker; drawn as a triangle with tip at the point.
+    pub player_spawn: Option<(f32, f32)>,
+    /// Explored chunk rects that stay permanently visible.
+    pub fog_explored: Option<&'a [WorldBounds]>,
+    /// Active vision circle (cx, cy, radius); unioned with explored rects.
+    pub fog_vision: Option<(f32, f32, f32)>,
+}
+
+/// Tip at spawn; base above so the marker points into the chosen tile.
+fn draw_player_spawn(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    bounds: &WorldBounds,
+    spawn: (f32, f32),
+) {
+    let (wx, wy) = spawn;
+    let pad = bounds.span * 0.02;
+    if wx < bounds.x0 - pad
+        || wx > bounds.x0 + bounds.span + pad
+        || wy < bounds.y0 - pad
+        || wy > bounds.y0 + bounds.span + pad
+    {
+        return;
+    }
+
+    let sx = ((wx - bounds.x0) / bounds.span) * width as f32;
+    let sy = ((wy - bounds.y0) / bounds.span) * height as f32;
+    // Keep marker readable on global (512) and chunk (256) textures.
+    let size = (width.min(height) as f32 * 0.028).clamp(7.0, 14.0);
+    let tip = (sx, sy);
+    let left = (sx - size * 0.55, sy - size);
+    let right = (sx + size * 0.55, sy - size);
+
+    fill_triangle(pixels, width, height, tip, left, right, [0xe8, 0x2b, 0x2b, 230]);
+    // Thin dark outline via slightly larger stroke points at edges.
+    stroke_triangle(pixels, width, height, tip, left, right, [0x1a, 0x0a, 0x0a, 255]);
+}
+
+fn fill_triangle(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    rgba: [u8; 4],
+) {
+    let min_x = a.0.min(b.0).min(c.0).floor().max(0.0) as i32;
+    let max_x = a.0.max(b.0).max(c.0).ceil().min(width as f32 - 1.0) as i32;
+    let min_y = a.1.min(b.1).min(c.1).floor().max(0.0) as i32;
+    let max_y = a.1.max(b.1).max(c.1).ceil().min(height as f32 - 1.0) as i32;
+    let area = (b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1);
+    if area.abs() < 1e-4 {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let w0 = (b.0 - a.0) * (py - a.1) - (b.1 - a.1) * (px - a.0);
+            let w1 = (c.0 - b.0) * (py - b.1) - (c.1 - b.1) * (px - b.0);
+            let w2 = (a.0 - c.0) * (py - c.1) - (a.1 - c.1) * (px - c.0);
+            let inside = if area > 0.0 {
+                w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0
+            } else {
+                w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0
+            };
+            if inside {
+                let i = (y as usize * width + x as usize) * 4;
+                blend_pixel(pixels, i, rgba[0], rgba[1], rgba[2], rgba[3]);
+            }
+        }
+    }
+}
+
+fn stroke_triangle(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    rgba: [u8; 4],
+) {
+    for (p0, p1) in [(a, b), (b, c), (c, a)] {
+        let steps = ((p0.0 - p1.0).hypot(p0.1 - p1.1).ceil() as i32).max(1);
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            let x = (p0.0 + (p1.0 - p0.0) * t).round() as i32;
+            let y = (p0.1 + (p1.1 - p0.1) * t).round() as i32;
+            if x >= 0 && y >= 0 && (x as usize) < width && (y as usize) < height {
+                let i = (y as usize * width + x as usize) * 4;
+                blend_pixel(pixels, i, rgba[0], rgba[1], rgba[2], rgba[3]);
+            }
+        }
+    }
 }
 
 pub fn compose_map_image(input: ComposeInput<'_>) -> ColorImage {
@@ -201,7 +298,64 @@ pub fn compose_map_image(input: ComposeInput<'_>) -> ColorImage {
         Some(input.grid),
     );
 
+    if let Some(spawn) = input.player_spawn {
+        draw_player_spawn(&mut rgba, w, h, &input.bounds, spawn);
+    }
+
+    if input.fog_explored.is_some() || input.fog_vision.is_some() {
+        apply_fog_of_war(
+            &mut rgba,
+            w,
+            h,
+            &input.bounds,
+            input.fog_explored.unwrap_or(&[]),
+            input.fog_vision,
+        );
+        if let Some(spawn) = input.player_spawn {
+            draw_player_spawn(&mut rgba, w, h, &input.bounds, spawn);
+        }
+    }
+
     ColorImage::from_rgba_unmultiplied([w, h], &rgba)
+}
+
+/// Visible if inside any explored rect or the vision circle.
+fn apply_fog_of_war(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    view: &WorldBounds,
+    explored: &[WorldBounds],
+    vision: Option<(f32, f32, f32)>,
+) {
+    if width == 0 || height == 0 || view.span <= 0.0 {
+        return;
+    }
+    let r2 = vision.map(|(_, _, r)| r * r);
+    for y in 0..height {
+        let wy = view.y0 + ((y as f32 + 0.5) / height as f32) * view.span;
+        for x in 0..width {
+            let wx = view.x0 + ((x as f32 + 0.5) / width as f32) * view.span;
+            let in_explored = explored.iter().any(|k| {
+                wx >= k.x0 && wx < k.x0 + k.span && wy >= k.y0 && wy < k.y0 + k.span
+            });
+            let in_vision = match (vision, r2) {
+                (Some((cx, cy, _)), Some(r2)) => {
+                    let dx = wx - cx;
+                    let dy = wy - cy;
+                    dx * dx + dy * dy <= r2
+                }
+                _ => false,
+            };
+            if !in_explored && !in_vision {
+                let i = (y * width + x) * 4;
+                pixels[i] = 0;
+                pixels[i + 1] = 0;
+                pixels[i + 2] = 0;
+                pixels[i + 3] = 255;
+            }
+        }
+    }
 }
 
 pub fn biome_at_pixel(
