@@ -120,19 +120,20 @@ pub const SETTLEMENT_INFO: [SettlementInfo; 4] = [
     },
 ];
 
-pub const DISTRICT_KIND_ORDER: [DistrictKind; 9] = [
+pub const DISTRICT_KIND_ORDER: [DistrictKind; 10] = [
     DistrictKind::Center,
     DistrictKind::Market,
     DistrictKind::Craft,
     DistrictKind::Port,
     DistrictKind::Temple,
     DistrictKind::Noble,
+    DistrictKind::Military,
     DistrictKind::Residential,
     DistrictKind::Forest,
     DistrictKind::Outskirts,
 ];
 
-pub const DISTRICT_INFO: [DistrictInfo; 9] = [
+pub const DISTRICT_INFO: [DistrictInfo; 10] = [
     DistrictInfo {
         label: "Centrum / rynek",
         fill: Rgba::rgb(0x7a, 0x4e, 0x36),
@@ -156,6 +157,10 @@ pub const DISTRICT_INFO: [DistrictInfo; 9] = [
     DistrictInfo {
         label: "Zamożna",
         fill: Rgba::rgb(0xc4, 0xa0, 0x7a),
+    },
+    DistrictInfo {
+        label: "Wojskowa",
+        fill: Rgba::rgb(0x3e, 0x48, 0x58),
     },
     DistrictInfo {
         label: "Mieszkaniowa",
@@ -222,9 +227,10 @@ pub fn district_info(kind: DistrictKind) -> DistrictInfo {
         DistrictKind::Port => DISTRICT_INFO[3],
         DistrictKind::Temple => DISTRICT_INFO[4],
         DistrictKind::Noble => DISTRICT_INFO[5],
-        DistrictKind::Residential => DISTRICT_INFO[6],
-        DistrictKind::Forest => DISTRICT_INFO[7],
-        DistrictKind::Outskirts => DISTRICT_INFO[8],
+        DistrictKind::Military => DISTRICT_INFO[6],
+        DistrictKind::Residential => DISTRICT_INFO[7],
+        DistrictKind::Forest => DISTRICT_INFO[8],
+        DistrictKind::Outskirts => DISTRICT_INFO[9],
     }
 }
 
@@ -1585,6 +1591,16 @@ fn draw_footprint(
         .iter()
         .map(|&(x, y)| local_to_canvas(x, y, sx, sy, rot, stretch))
         .collect();
+    if settlement.walled {
+        stroke_poly(
+            pixels,
+            width,
+            height,
+            &outline_main,
+            3.2,
+            Rgba::rgb(0x2a, 0x2e, 0x34),
+        );
+    }
     stroke_poly(
         pixels,
         width,
@@ -2102,6 +2118,7 @@ mod shape_tests {
                 },
             ],
             streets: vec![],
+            walled: false,
         }
     }
 

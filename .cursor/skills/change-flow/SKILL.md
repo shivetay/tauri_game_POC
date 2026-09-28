@@ -38,6 +38,7 @@ Wait for OK unless the user already said to implement / add / just do it.
 - Comments only when intent is not obvious from the code (English).
 - Leave no mess: unused import/var/param/type/function/file, commented-out code, debug `console.log` / `println!`, "later" `TODO`, `#[allow(dead_code)]` instead of deletion.
 - Do not create helpers or exports that are unused in the same diff.
+- **No voluntary extras.** Do not change markers, icons, colors, labels, layout, or any other detail that the user did not name. A bugfix must not redesign the UI “while we’re here.” If an extra change seems necessary, ask and wait.
 
 ## 4. Verify
 
