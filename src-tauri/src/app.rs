@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Instant;
@@ -24,6 +25,7 @@ use crate::world::ecology::{
     generate_chunk_ecology_sampled, generate_region_ecology_sampled, ChunkEcologyMap,
     RegionEcologyMap,
 };
+use crate::world::elevation::{is_water_biome, HIGH_M};
 use crate::world::grid::{
     generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
 };
@@ -34,14 +36,22 @@ use crate::world::settlement::{
 };
 use crate::world::types::{ChunkId, RegionId, TerrainGrid, TileType};
 
-/// Average on-foot speed: 5 km/h with 1 world unit = 1 km.
-const WALK_WU_PER_GAME_HOUR: f32 = 5.0;
+/// On-road speed: 5 km/h with 1 world unit = 1 km.
+const WALK_ROAD_WU_PER_GAME_HOUR: f32 = 5.0;
+/// Off-road speed (no visible road underfoot).
+const WALK_OFFROAD_WU_PER_GAME_HOUR: f32 = 2.0;
 /// Distance below which the player is considered "already at" a destination.
 const AT_PLACE_EPS: f32 = 0.35;
 /// Vision / fog radius in world units (km).
 const VISION_RADIUS: f32 = 3.0;
-/// How far ahead to look for a road when picking a cardinal direction.
-const ROAD_LOOK_AHEAD: f32 = 12.0;
+/// How close to a road polyline counts as on the road ribbon (bridges / walkability).
+const ROAD_TRAVEL_EPS: f32 = 1.0;
+/// Max distance to snap start/goal onto the road network for routed travel.
+const ROAD_SNAP_EPS: f32 = 5.0;
+/// Join nearby road points (crossings) into one graph.
+const ROAD_NODE_LINK_EPS: f32 = 1.5;
+/// |dot(move, segment)| above this ⇒ traveling along the road (not merely crossing).
+const ROAD_ALIGN_MIN: f32 = 0.85;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cardinal {
@@ -235,8 +245,10 @@ pub struct MapApp {
     player_spawn: Option<(f32, f32)>,
     /// Current marker position.
     player_pos: Option<(f32, f32)>,
-    /// Walk destination.
-    move_target: Option<(f32, f32)>,
+    /// Remaining walk waypoints (first = current leg target). Prefer road network.
+    move_path: Vec<(f32, f32)>,
+    /// Cached terrain for walkability (rebuilt when seed/params change).
+    terrain: Option<TerrainSampler>,
     /// Settlements the player has visited (floor coords key).
     known_places: HashSet<(i32, i32)>,
     /// Chunks the player has entered — stay permanently visible on the map.
@@ -286,7 +298,8 @@ impl MapApp {
             pending_spawn: None,
             player_spawn: None,
             player_pos: None,
-            move_target: None,
+            move_path: Vec::new(),
+            terrain: None,
             known_places: HashSet::new(),
             known_chunks: HashSet::new(),
             loading: false,
@@ -347,7 +360,8 @@ impl MapApp {
             self.pending_spawn = None;
             self.player_spawn = None;
             self.player_pos = None;
-            self.move_target = None;
+            self.move_path.clear();
+            self.terrain = None;
             self.known_places.clear();
             self.known_chunks.clear();
         }
@@ -427,6 +441,12 @@ impl MapApp {
             .as_ref()
             .map(|m| m.roads.as_slice())
             .unwrap_or(&[])
+    }
+
+    fn ensure_terrain(&mut self) {
+        if self.terrain.is_none() {
+            self.terrain = Some(TerrainSampler::new(self.config()));
+        }
     }
 
     fn road_detail(&self) -> RoadDetail {
@@ -558,7 +578,7 @@ impl MapApp {
         };
         self.player_spawn = Some(pos);
         self.player_pos = Some(pos);
-        self.move_target = None;
+        self.move_path.clear();
         self.pending_spawn = None;
         self.known_places.clear();
         self.known_chunks.clear();
@@ -715,20 +735,51 @@ impl MapApp {
     fn set_walk_target(&mut self, wx: f32, wy: f32, ctx: &egui::Context) {
         let config = self.config();
         let target = self.clamp_to_world(wx, wy, &config);
-        if let Some(pos) = self.player_pos {
-            if player_at(pos, target) {
-                self.selected_info = Some(format!(
-                    "Już tu jesteś ({:.0}, {:.0})",
-                    target.0, target.1
-                ));
-                return;
-            }
+        let Some(pos) = self.player_pos else {
+            return;
+        };
+        if player_at(pos, target) {
+            self.selected_info = Some(format!(
+                "Już tu jesteś ({:.0}, {:.0})",
+                target.0, target.1
+            ));
+            return;
         }
-        self.move_target = Some(target);
-        self.selected_info = Some(format!(
-            "W drodze do ({:.0}, {:.0})",
-            target.0, target.1
-        ));
+        self.ensure_terrain();
+        let roads = self
+            .settlements
+            .as_ref()
+            .map(|m| m.roads.as_slice())
+            .unwrap_or(&[]);
+        let (raw_path, via_road) = if let Some(route) = road_route(pos, target, roads) {
+            (route, true)
+        } else {
+            (vec![target], false)
+        };
+        let path = {
+            let sampler = self.terrain.as_ref().expect("terrain after ensure");
+            prepare_walk_path(sampler, roads, pos, &raw_path)
+        };
+        if path.is_empty() {
+            self.move_path.clear();
+            self.selected_info =
+                Some("Przejście zablokowane (woda lub góry).".to_string());
+            self.rebuild_texture(ctx);
+            return;
+        }
+        let dest = *path.last().unwrap();
+        let full = player_at(dest, target);
+        self.move_path = path;
+        self.selected_info = Some(if via_road && full {
+            format!("Po drodze do ({:.0}, {:.0})", target.0, target.1)
+        } else if full {
+            format!("W drodze do ({:.0}, {:.0})", target.0, target.1)
+        } else {
+            format!(
+                "Przeszkoda — idę do ({:.0}, {:.0})",
+                dest.0, dest.1
+            )
+        });
         self.rebuild_texture(ctx);
     }
 
@@ -798,7 +849,7 @@ impl MapApp {
         }
     }
 
-    /// Prefer a road in that direction; otherwise walk a short step that way.
+    /// Prefer a road visible in vision in that direction; otherwise a short off-road step.
     fn walk_toward_cardinal(&mut self, dir: Cardinal, ctx: &egui::Context) {
         let Some(pos) = self.player_pos else {
             return;
@@ -841,31 +892,71 @@ impl MapApp {
         if game_secs <= 0.0 || !game_secs.is_finite() {
             return;
         }
-        let (Some(pos), Some(target)) = (self.player_pos, self.move_target) else {
+        let Some(pos) = self.player_pos else {
+            return;
+        };
+        let Some(target) = self.move_path.first().copied() else {
             return;
         };
         let config = self.config();
-        let speed = WALK_WU_PER_GAME_HOUR / 3600.0;
-        let step = speed * game_secs as f32;
+        self.ensure_terrain();
         let dx = target.0 - pos.0;
         let dy = target.1 - pos.1;
+        let along_road = {
+            let roads = self
+                .settlements
+                .as_ref()
+                .map(|m| m.roads.as_slice())
+                .unwrap_or(&[]);
+            traveling_along_road(roads, pos.0, pos.1, dx, dy, ROAD_TRAVEL_EPS)
+        };
+        let speed_wu = if along_road {
+            WALK_ROAD_WU_PER_GAME_HOUR
+        } else {
+            WALK_OFFROAD_WU_PER_GAME_HOUR
+        };
+        let speed = speed_wu / 3600.0;
+        let step = speed * game_secs as f32;
         let dist = (dx * dx + dy * dy).sqrt();
-        let (nx, ny) = if dist <= step || dist < 1e-4 {
-            self.move_target = None;
-            self.selected_info = Some(format!("Na miejscu ({:.0}, {:.0})", target.0, target.1));
+        let reached = dist <= step || dist < 1e-4;
+        let (nx, ny) = if reached {
             target
         } else {
             let t = step / dist;
             (pos.0 + dx * t, pos.1 + dy * t)
         };
+        let next = self.clamp_to_world(nx, ny, &config);
+        let blocked = {
+            let roads = self
+                .settlements
+                .as_ref()
+                .map(|m| m.roads.as_slice())
+                .unwrap_or(&[]);
+            let sampler = self.terrain.as_ref().expect("terrain after ensure");
+            !point_traversable(sampler, roads, next.0, next.1)
+        };
+        if blocked {
+            self.move_path.clear();
+            self.selected_info =
+                Some("Przejście zablokowane (woda lub góry).".to_string());
+            self.rebuild_texture(ctx);
+            return;
+        }
         let prev_chunk = world_to_chunk(pos.0, pos.1, &config);
-        self.player_pos = Some(self.clamp_to_world(nx, ny, &config));
+        self.player_pos = Some(next);
+        if reached {
+            self.move_path.remove(0);
+            if self.move_path.is_empty() {
+                self.selected_info =
+                    Some(format!("Na miejscu ({:.0}, {:.0})", target.0, target.1));
+            }
+        }
         let config = self.config();
         let explored = self.explore_player_chunk(&config);
         let visited = self.update_visited_places();
         if visited {
             self.selected_info = Some("Odwiedzono osadę — dodano do znanych miejsc.".to_string());
-        } else if explored {
+        } else if explored && !reached {
             self.selected_info = Some("Odkryto nowy obszar.".to_string());
         }
         self.maybe_follow_player_chunk(prev_chunk, ctx);
@@ -1036,7 +1127,7 @@ impl MapApp {
                             .monospace()
                             .small(),
                     );
-                    if self.move_target.is_some() {
+                    if !self.move_path.is_empty() {
                         ui.label(RichText::new("w drodze · piechota").small());
                     } else {
                         ui.label(RichText::new("piechota 5 km/h").small());
@@ -1650,6 +1741,7 @@ fn known_place_dests(
 }
 
 /// Best road point ahead in a cardinal direction (prefers highways).
+/// Only points inside the player's vision count as known roads.
 fn road_target_in_direction(
     pos: (f32, f32),
     dir: Cardinal,
@@ -1667,7 +1759,7 @@ fn road_target_in_direction(
             let vx = p.x - pos.0;
             let vy = p.y - pos.1;
             let dist = (vx * vx + vy * vy).sqrt();
-            if dist < 0.6 || dist > ROAD_LOOK_AHEAD {
+            if dist < 0.6 || dist > VISION_RADIUS {
                 continue;
             }
             let along = vx * dx + vy * dy;
@@ -1685,6 +1777,297 @@ fn road_target_in_direction(
         }
     }
     best.map(|(_, x, y)| (x, y))
+}
+
+fn terrain_walkable(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
+    let cell = sampler.cell_at(
+        x as f64,
+        y as f64,
+        crate::world::config::LodLevel::Macro,
+    );
+    if is_water_biome(cell.elevation) || cell.elevation >= HIGH_M {
+        return false;
+    }
+    !matches!(
+        cell.biome,
+        TileType::Water | TileType::DeepWater | TileType::Mountain | TileType::Snow
+    )
+}
+
+fn dist2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let dx = ax - bx;
+    let dy = ay - by;
+    dx * dx + dy * dy
+}
+
+fn dist_point_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let abx = bx - ax;
+    let aby = by - ay;
+    let len2 = abx * abx + aby * aby;
+    if len2 < 1e-8 {
+        return dist2(px, py, ax, ay).sqrt();
+    }
+    let t = ((px - ax) * abx + (py - ay) * aby) / len2;
+    let t = t.clamp(0.0, 1.0);
+    let qx = ax + abx * t;
+    let qy = ay + aby * t;
+    dist2(px, py, qx, qy).sqrt()
+}
+
+fn near_road(roads: &[Road], x: f32, y: f32, eps: f32) -> bool {
+    let eps2 = eps * eps;
+    for road in roads {
+        for p in &road.points {
+            if dist2(x, y, p.x, p.y) <= eps2 {
+                return true;
+            }
+        }
+        for i in 0..road.points.len().saturating_sub(1) {
+            let a = &road.points[i];
+            let b = &road.points[i + 1];
+            if dist_point_to_segment(x, y, a.x, a.y, b.x, b.y) <= eps {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True only when near a road segment and moving roughly along it (not across it).
+fn traveling_along_road(
+    roads: &[Road],
+    x: f32,
+    y: f32,
+    move_dx: f32,
+    move_dy: f32,
+    eps: f32,
+) -> bool {
+    let move_len = (move_dx * move_dx + move_dy * move_dy).sqrt();
+    if move_len < 1e-4 {
+        return false;
+    }
+    let mdx = move_dx / move_len;
+    let mdy = move_dy / move_len;
+    for road in roads {
+        for i in 0..road.points.len().saturating_sub(1) {
+            let a = &road.points[i];
+            let b = &road.points[i + 1];
+            if dist_point_to_segment(x, y, a.x, a.y, b.x, b.y) > eps {
+                continue;
+            }
+            let sdx = b.x - a.x;
+            let sdy = b.y - a.y;
+            let slen = (sdx * sdx + sdy * sdy).sqrt();
+            if slen < 1e-4 {
+                continue;
+            }
+            let alignment = ((sdx / slen) * mdx + (sdy / slen) * mdy).abs();
+            if alignment >= ROAD_ALIGN_MIN {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Walkable open terrain, or on an existing road ribbon (bridges included).
+fn point_traversable(sampler: &TerrainSampler, roads: &[Road], x: f32, y: f32) -> bool {
+    terrain_walkable(sampler, x, y) || near_road(roads, x, y, ROAD_TRAVEL_EPS)
+}
+
+/// Furthest point on from→to that stays traversable; `true` if the full segment is clear.
+fn farthest_traversable(
+    sampler: &TerrainSampler,
+    roads: &[Road],
+    from: (f32, f32),
+    to: (f32, f32),
+) -> ((f32, f32), bool) {
+    let dx = to.0 - from.0;
+    let dy = to.1 - from.1;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if dist < 1e-4 {
+        return (from, point_traversable(sampler, roads, from.0, from.1));
+    }
+    let n = ((dist / 0.5).ceil() as usize).clamp(2, 200);
+    let mut last = from;
+    for i in 1..=n {
+        let t = i as f32 / n as f32;
+        let x = from.0 + dx * t;
+        let y = from.1 + dy * t;
+        if !point_traversable(sampler, roads, x, y) {
+            return (last, false);
+        }
+        last = (x, y);
+    }
+    (to, true)
+}
+
+/// Clamp a waypoint chain so each leg stays traversable; stop at the first block.
+fn prepare_walk_path(
+    sampler: &TerrainSampler,
+    roads: &[Road],
+    from: (f32, f32),
+    waypoints: &[(f32, f32)],
+) -> Vec<(f32, f32)> {
+    let mut out = Vec::new();
+    let mut cur = from;
+    for &wp in waypoints {
+        if player_at(cur, wp) {
+            continue;
+        }
+        let (dest, clear) = farthest_traversable(sampler, roads, cur, wp);
+        if player_at(cur, dest) {
+            break;
+        }
+        out.push(dest);
+        if !clear {
+            break;
+        }
+        cur = dest;
+    }
+    out
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct RouteNode {
+    cost: u32,
+    idx: usize,
+}
+
+impl Ord for RouteNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .cmp(&self.cost)
+            .then_with(|| self.idx.cmp(&other.idx))
+    }
+}
+
+impl PartialOrd for RouteNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn nearest_road_node(nodes: &[(f32, f32)], p: (f32, f32)) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, &(x, y)) in nodes.iter().enumerate() {
+        let d = dist2(p.0, p.1, x, y).sqrt();
+        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((i, d));
+        }
+    }
+    best
+}
+
+/// Shortest path along road polylines from near `from` to near `to`.
+/// Returns waypoints on the network, ending at `to` when reachable.
+fn road_route(from: (f32, f32), to: (f32, f32), roads: &[Road]) -> Option<Vec<(f32, f32)>> {
+    let mut nodes: Vec<(f32, f32)> = Vec::new();
+    for road in roads {
+        for p in &road.points {
+            nodes.push((p.x, p.y));
+        }
+    }
+    if nodes.len() < 2 {
+        return None;
+    }
+
+    let mut edges: Vec<Vec<(usize, u32)>> = vec![Vec::new(); nodes.len()];
+    let mut offset = 0usize;
+    for road in roads {
+        let n = road.points.len();
+        for i in 0..n.saturating_sub(1) {
+            let a = offset + i;
+            let b = offset + i + 1;
+            let d = (dist2(nodes[a].0, nodes[a].1, nodes[b].0, nodes[b].1).sqrt() * 100.0)
+                .round() as u32;
+            let d = d.max(1);
+            edges[a].push((b, d));
+            edges[b].push((a, d));
+        }
+        offset += n;
+    }
+    for i in 0..nodes.len() {
+        for j in (i + 1)..nodes.len() {
+            let d = dist2(nodes[i].0, nodes[i].1, nodes[j].0, nodes[j].1).sqrt();
+            if d > 0.05 && d <= ROAD_NODE_LINK_EPS {
+                let c = (d * 100.0).round() as u32;
+                let c = c.max(1);
+                edges[i].push((j, c));
+                edges[j].push((i, c));
+            }
+        }
+    }
+
+    let (start, start_d) = nearest_road_node(&nodes, from)?;
+    let (goal, goal_d) = nearest_road_node(&nodes, to)?;
+    if start_d > ROAD_SNAP_EPS || goal_d > ROAD_SNAP_EPS {
+        return None;
+    }
+
+    let n = nodes.len();
+    let mut dist = vec![u32::MAX; n];
+    let mut prev = vec![None; n];
+    let mut heap = BinaryHeap::new();
+    dist[start] = 0;
+    heap.push(RouteNode {
+        cost: 0,
+        idx: start,
+    });
+    while let Some(RouteNode { cost, idx }) = heap.pop() {
+        if cost != dist[idx] {
+            continue;
+        }
+        if idx == goal {
+            break;
+        }
+        for &(next, w) in &edges[idx] {
+            let next_cost = cost.saturating_add(w);
+            if next_cost < dist[next] {
+                dist[next] = next_cost;
+                prev[next] = Some(idx);
+                heap.push(RouteNode {
+                    cost: next_cost,
+                    idx: next,
+                });
+            }
+        }
+    }
+    if dist[goal] == u32::MAX {
+        return None;
+    }
+
+    let mut chain = Vec::new();
+    let mut cur = Some(goal);
+    while let Some(i) = cur {
+        chain.push(nodes[i]);
+        if i == start {
+            break;
+        }
+        cur = prev[i];
+    }
+    chain.reverse();
+    if chain.is_empty() {
+        return None;
+    }
+
+    // Skip the entry node when the player is already there.
+    if player_at(from, chain[0]) {
+        chain.remove(0);
+    }
+    if chain
+        .last()
+        .map(|p| !player_at(*p, to))
+        .unwrap_or(true)
+    {
+        chain.push(to);
+    }
+    if chain.is_empty() {
+        None
+    } else {
+        Some(chain)
+    }
 }
 
 fn biome_label(biome: TileType) -> &'static str {
