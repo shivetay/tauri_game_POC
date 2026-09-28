@@ -608,106 +608,422 @@ fn road_axes(settlement: &Settlement) -> Vec<f32> {
     }
 }
 
-fn lobe_weight(kind: RoadKind) -> f32 {
-    match kind {
-        RoadKind::Highway => 1.55,
-        RoadKind::Secondary => 1.05,
-        RoadKind::Local => 0.55,
+fn signed_angle(a: f32, b: f32) -> f32 {
+    let mut d = norm_angle(a) - norm_angle(b);
+    if d > std::f32::consts::PI {
+        d -= TAU;
     }
+    if d < -std::f32::consts::PI {
+        d += TAU;
+    }
+    d
 }
 
-fn core_pos(settlement: &Settlement) -> (f32, f32) {
-    (settlement.core_dx, settlement.core_dy)
+/// European plan families. Same position always picks the same outline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Footprint {
+    /// Ulicówka, Straßendorf, English burgage plots: a ribbon along one road.
+    Street,
+    /// Owalnica / Angerdorf: pointed green with house rows, faceted not oval.
+    Green,
+    /// Haufendorf / wielodrożnica: compact grown cluster, uneven polygon.
+    Heap,
+    /// Lokacja (Magdeburg law), bastide, Zamość: rectangle or trapezoid.
+    Charter,
+    /// Hanseatic / nadbrzeżna: long quay, shallower irregular landward side.
+    Riverside,
+    /// Widlica or a triangular market where two roads meet.
+    Fork,
+    /// Trace italienne: hexagon or octagon (Palmanova, Neuf-Brisach). Rare.
+    Bastion,
+    /// Rundling: horseshoe of farms open toward the lane. Slavic, Wendland.
+    Rundling,
+    /// Łańcuchówka: plots of steady width along a bent valley road.
+    Ridge,
 }
 
-fn outline_r(settlement: &Settlement, angle: f32) -> f32 {
-    let a = norm_angle(angle);
-    let axes = road_axes(settlement);
-    let planned = is_planned(settlement);
-    let elong_a = axes.first().copied().unwrap_or(0.0);
-    let da = a - elong_a;
-    let c = da.cos();
-    let s = da.sin();
-    let elong = if planned {
-        1.1 + unit(settlement.x, settlement.y, 18) * 0.12
-    } else if settlement.kind == SettlementKind::Hamlet {
-        1.2 + unit(settlement.x, settlement.y, 18) * 0.22
-    } else {
-        1.48 + unit(settlement.x, settlement.y, 18) * 0.5
-    };
-    let perp = if planned {
-        0.9
-    } else {
-        0.5 + unit(settlement.x, settlement.y, 19) * 0.22
-    };
-    let mut r = (elong * perp) / ((perp * c).powi(2) + (elong * s).powi(2)).sqrt();
-    r *= if planned { 0.76 } else { 0.68 };
-    let approaches = road_approaches(settlement);
-    if planned {
-        let sq = 0.8 / c.abs().max(s.abs()).max(0.25);
-        r = r * 0.38 + sq.min(1.22) * 0.62;
-        for ap in &approaches {
-            let k = (a - ap.angle).cos();
-            if k > 0.2 {
-                r += 0.08 * lobe_weight(ap.kind) * k * k;
+fn port_dir(settlement: &Settlement) -> Option<f32> {
+    settlement
+        .districts
+        .iter()
+        .find(|d| d.kind == DistrictKind::Port)
+        .map(|d| d.a0 + d.span * 0.5)
+}
+
+fn footprint_kind(settlement: &Settlement) -> Footprint {
+    let roll = unit(settlement.x, settlement.y, 60);
+    let port = port_dir(settlement).is_some();
+    if is_planned(settlement) {
+        return if roll < 0.72 {
+            Footprint::Charter
+        } else {
+            Footprint::Bastion
+        };
+    }
+    match settlement.kind {
+        SettlementKind::Hamlet => {
+            if roll < 0.42 {
+                Footprint::Street
+            } else if roll < 0.64 {
+                Footprint::Heap
+            } else if roll < 0.80 {
+                Footprint::Green
+            } else if roll < 0.92 {
+                Footprint::Ridge
+            } else {
+                Footprint::Rundling
             }
         }
-    } else {
-        for (i, ap) in approaches.iter().enumerate() {
-            let k = (a - ap.angle).cos();
-            if k > 0.1 {
-                let lobe = (0.16 + unit(settlement.x, settlement.y, 21 + i as i32) * 0.14)
-                    * lobe_weight(ap.kind);
-                r += lobe * k * k;
+        SettlementKind::Village => {
+            if roll < 0.26 {
+                Footprint::Street
+            } else if roll < 0.48 {
+                Footprint::Heap
+            } else if roll < 0.66 {
+                Footprint::Green
+            } else if roll < 0.80 {
+                Footprint::Ridge
+            } else if roll < 0.92 {
+                Footprint::Fork
+            } else {
+                Footprint::Rundling
+            }
+        }
+        SettlementKind::Town => {
+            if roll < 0.30 {
+                Footprint::Charter
+            } else if roll < 0.52 {
+                Footprint::Heap
+            } else if roll < 0.68 {
+                Footprint::Green
+            } else if roll < 0.80 {
+                Footprint::Fork
+            } else if roll < 0.90 {
+                Footprint::Street
+            } else if port {
+                Footprint::Riverside
+            } else {
+                Footprint::Charter
+            }
+        }
+        SettlementKind::City => {
+            if roll < 0.36 {
+                Footprint::Charter
+            } else if roll < 0.58 {
+                Footprint::Heap
+            } else if roll < 0.74 {
+                Footprint::Fork
+            } else if roll < 0.88 {
+                if port {
+                    Footprint::Riverside
+                } else {
+                    Footprint::Heap
+                }
+            } else {
+                Footprint::Charter
             }
         }
     }
-    let aq = ((a / TAU) * 16.0) as i32;
-    let mut jitter = 0.9 + unit(settlement.x, settlement.y, 30 + aq) * 0.22;
-    for ap in &approaches {
-        let k = (a - ap.angle).cos();
-        if k > 0.72 {
-            let w = (k - 0.72) / 0.28;
-            jitter = jitter * (1.0 - w) + w;
-        }
-    }
-    r *= jitter;
-    r.clamp(0.36, 1.72)
 }
 
-fn plan_outline(settlement: &Settlement) -> Vec<(f32, f32)> {
-    let n = match settlement.kind {
-        SettlementKind::City => 22,
-        SettlementKind::Town => 18,
-        _ => 14,
-    };
-    let rot = road_axes(settlement).first().copied().unwrap_or(0.0);
+fn road_axis(settlement: &Settlement) -> f32 {
+    road_axes(settlement).first().copied().unwrap_or(0.0)
+}
+
+fn plan_axis(settlement: &Settlement) -> f32 {
+    let road = road_axis(settlement);
+    match footprint_kind(settlement) {
+        Footprint::Riverside => {
+            port_dir(settlement).unwrap_or(road) + std::f32::consts::FRAC_PI_2
+        }
+        _ => road,
+    }
+}
+
+fn cross_axis(settlement: &Settlement) -> f32 {
+    let main = plan_axis(settlement);
+    for ap in road_approaches(settlement) {
+        if signed_angle(ap.angle, main).abs() > 0.45 {
+            return ap.angle;
+        }
+    }
+    main + std::f32::consts::FRAC_PI_2
+}
+
+fn rot_uv(axis: f32, u: f32, v: f32) -> (f32, f32) {
+    let c = axis.cos();
+    let s = axis.sin();
+    (u * c - v * s, u * s + v * c)
+}
+
+fn ribbon_size(settlement: &Settlement) -> (f32, f32) {
+    let x = settlement.x;
+    let y = settlement.y;
+    let along = unit(x, y, 61);
+    let across = unit(x, y, 62);
+    match settlement.kind {
+        SettlementKind::Hamlet => (0.85 + along * 0.45, 0.36 + across * 0.10),
+        SettlementKind::Village => (1.05 + along * 0.50, 0.40 + across * 0.12),
+        SettlementKind::Town => (0.85 + along * 0.28, 0.50 + across * 0.10),
+        SettlementKind::City => (0.78 + along * 0.18, 0.58 + across * 0.10),
+    }
+}
+
+fn strip_outline(settlement: &Settlement, axis: f32, bend: f32, hl: f32, hw: f32) -> Vec<(f32, f32)> {
+    let n = 4;
+    let mut upper = Vec::with_capacity(n);
+    let mut lower = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let u = -hl + 2.0 * hl * t;
+        let bulge = bend * (1.0 - (2.0 * t - 1.0).powi(2));
+        let wob = (unit(settlement.x, settlement.y, 90 + i as i32) - 0.5) * 0.05;
+        upper.push(rot_uv(axis, u, bulge + hw + wob));
+        lower.push(rot_uv(axis, u, bulge - hw - wob));
+    }
+    upper.extend(lower.into_iter().rev());
+    upper
+}
+
+fn green_outline(settlement: &Settlement, axis: f32) -> Vec<(f32, f32)> {
+    let x = settlement.x;
+    let y = settlement.y;
+    let l = match settlement.kind {
+        SettlementKind::City => 0.92,
+        SettlementKind::Town => 1.02,
+        SettlementKind::Village => 1.12,
+        SettlementKind::Hamlet => 0.88,
+    } + (unit(x, y, 61) - 0.5) * 0.12;
+    let w = l * (0.50 + unit(x, y, 62) * 0.16);
+    let shoulder = 0.36 + unit(x, y, 63) * 0.14;
+    let local = [
+        (l, (unit(x, y, 64) - 0.5) * 0.06),
+        (l * shoulder, w),
+        (-l * shoulder, w * (0.90 + unit(x, y, 65) * 0.12)),
+        (-l * (0.92 + unit(x, y, 66) * 0.08), (unit(x, y, 67) - 0.5) * 0.08),
+        (-l * shoulder, -w * (0.92 + unit(x, y, 68) * 0.10)),
+        (l * shoulder, -w),
+    ];
+    local
+        .into_iter()
+        .map(|(u, v)| rot_uv(axis, u, v))
+        .collect()
+}
+
+fn heap_outline(settlement: &Settlement, axis: f32) -> Vec<(f32, f32)> {
+    let x = settlement.x;
+    let y = settlement.y;
+    let n = 6 + (unit(x, y, 64) * 3.0) as usize;
+    let mut weights = Vec::with_capacity(n);
+    let mut sum = 0.0f32;
+    for i in 0..n {
+        let w = 0.65 + unit(x, y, 70 + i as i32) * 0.70;
+        weights.push(w);
+        sum += w;
+    }
+    let mut a = axis + unit(x, y, 65) * 0.5;
     let mut pts = Vec::with_capacity(n);
     for i in 0..n {
-        let a = rot + (i as f32 / n as f32) * TAU;
-        let r = outline_r(settlement, a);
+        let r = 0.68 + unit(x, y, 80 + i as i32) * 0.50;
         pts.push((a.cos() * r, a.sin() * r));
+        a += TAU * weights[i] / sum;
     }
     pts
 }
 
+fn charter_outline(settlement: &Settlement, axis: f32) -> Vec<(f32, f32)> {
+    let x = settlement.x;
+    let y = settlement.y;
+    let hl = 0.78 + unit(x, y, 61) * 0.30;
+    let hw = 0.58 + unit(x, y, 62) * 0.26;
+    let taper = (unit(x, y, 63) - 0.5) * 0.16 * hw;
+    let local = [
+        (-hl, -hw + taper),
+        (hl, -hw - taper),
+        (hl, hw + taper),
+        (-hl, hw - taper),
+    ];
+    local
+        .into_iter()
+        .map(|(u, v)| rot_uv(axis, u, v))
+        .collect()
+}
+
+fn bastion_outline(settlement: &Settlement, axis: f32) -> Vec<(f32, f32)> {
+    let n = if unit(settlement.x, settlement.y, 61) < 0.5 {
+        6
+    } else {
+        8
+    };
+    let r = 0.96 + unit(settlement.x, settlement.y, 62) * 0.08;
+    (0..n)
+        .map(|i| {
+            let a = axis + TAU * (i as f32 / n as f32);
+            (a.cos() * r, a.sin() * r)
+        })
+        .collect()
+}
+
+fn convex_hull(mut pts: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+    if pts.len() <= 2 {
+        return pts;
+    }
+    pts.sort_by(|a, b| {
+        a.0.partial_cmp(&b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5);
+    fn cross(o: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    }
+    let mut lower = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+    let mut upper = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+fn rect_corners(axis: f32, hl: f32, hw: f32) -> Vec<(f32, f32)> {
+    [(-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw)]
+        .into_iter()
+        .map(|(u, v)| rot_uv(axis, u, v))
+        .collect()
+}
+
+fn fork_outline(settlement: &Settlement) -> Vec<(f32, f32)> {
+    let x = settlement.x;
+    let y = settlement.y;
+    let main = plan_axis(settlement);
+    let cross = cross_axis(settlement);
+    let mut pts = rect_corners(main, 0.95 + unit(x, y, 61) * 0.28, 0.40 + unit(x, y, 62) * 0.10);
+    pts.extend(rect_corners(
+        cross,
+        0.72 + unit(x, y, 63) * 0.22,
+        0.36 + unit(x, y, 64) * 0.10,
+    ));
+    let hull = convex_hull(pts);
+    if hull.len() >= 3 {
+        hull
+    } else {
+        rect_corners(main, 1.0, 0.55)
+    }
+}
+
+fn riverside_outline(settlement: &Settlement) -> Vec<(f32, f32)> {
+    let x = settlement.x;
+    let y = settlement.y;
+    let shore = port_dir(settlement).unwrap_or_else(|| road_axis(settlement) + std::f32::consts::FRAC_PI_2);
+    let axis = shore + std::f32::consts::FRAC_PI_2;
+    let hl = 1.05 + unit(x, y, 61) * 0.35;
+    let front = 0.30 + unit(x, y, 62) * 0.08;
+    let back = 0.72 + unit(x, y, 63) * 0.26;
+    let local = [
+        (-hl, -front),
+        (hl, -front),
+        (hl * (0.58 + unit(x, y, 64) * 0.18), back),
+        (hl * (unit(x, y, 65) - 0.5) * 0.25, back * (0.90 + unit(x, y, 66) * 0.12)),
+        (-hl * (0.60 + unit(x, y, 67) * 0.2), back * (0.72 + unit(x, y, 68) * 0.16)),
+    ];
+    local
+        .into_iter()
+        .map(|(u, v)| rot_uv(axis, u, v))
+        .collect()
+}
+
+fn rundling_outline(settlement: &Settlement, axis: f32) -> Vec<(f32, f32)> {
+    let gap = 0.85 + unit(settlement.x, settlement.y, 61) * 0.35;
+    let n = 9;
+    let mut pts = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let a = axis + gap * 0.5 + t * (TAU - gap);
+        let r = 0.90 + (unit(settlement.x, settlement.y, 70 + i as i32) - 0.5) * 0.08;
+        pts.push((a.cos() * r, a.sin() * r));
+    }
+    let a0 = axis + gap * 0.5;
+    let a1 = axis + TAU - gap * 0.5;
+    let inner = 0.30;
+    pts.push((a1.cos() * inner, a1.sin() * inner));
+    pts.push((a0.cos() * inner, a0.sin() * inner));
+    pts
+}
+
+fn plan_outline(settlement: &Settlement) -> Vec<(f32, f32)> {
+    let axis = plan_axis(settlement);
+    match footprint_kind(settlement) {
+        Footprint::Street => {
+            let (hl, hw) = ribbon_size(settlement);
+            let bend = (unit(settlement.x, settlement.y, 66) - 0.5) * 0.10;
+            strip_outline(settlement, axis, bend, hl, hw)
+        }
+        Footprint::Ridge => {
+            let (hl, hw) = ribbon_size(settlement);
+            let bend = (unit(settlement.x, settlement.y, 66) - 0.5) * 0.70;
+            strip_outline(settlement, axis, bend, hl * 1.06, hw)
+        }
+        Footprint::Green => green_outline(settlement, axis),
+        Footprint::Heap => heap_outline(settlement, axis),
+        Footprint::Charter => charter_outline(settlement, axis),
+        Footprint::Bastion => bastion_outline(settlement, axis),
+        Footprint::Fork => fork_outline(settlement),
+        Footprint::Riverside => riverside_outline(settlement),
+        Footprint::Rundling => rundling_outline(settlement, axis),
+    }
+}
+
+fn snap_axis(v: f32) -> f32 {
+    if v.abs() < 0.42 {
+        0.0
+    } else {
+        v.signum()
+    }
+}
+
+/// Parcel anchor on a road-aligned grid. Inner and outer rings step sideways
+/// into rows, so districts fill blocks instead of pie slices.
 fn district_site(settlement: &Settlement, district: &District) -> (f32, f32) {
-    let c = core_pos(settlement);
-    if district.span >= TAU - 1e-3 {
-        return c;
+    let axis = plan_axis(settlement);
+    let (ux, uy) = (axis.cos(), axis.sin());
+    let (vx, vy) = (-uy, ux);
+    let place = |u: f32, v: f32| {
+        (
+            ux * u + vx * v + settlement.core_dx,
+            uy * u + vy * v + settlement.core_dy,
+        )
+    };
+    if district.kind == DistrictKind::Center || district.span >= TAU - 1e-3 {
+        return place(0.0, 0.0);
     }
-    let a = district.a0 + district.span * 0.5;
-    let r_out = outline_r(settlement, a);
-    let mut t = (district.inner + district.outer) * 0.5 / outer_scale(settlement);
-    t = (t * 0.85).clamp(0.16, 0.84);
-    if matches!(district.kind, DistrictKind::Forest | DistrictKind::Outskirts) {
-        t += 0.1;
+    let mid = district.a0 + district.span * 0.5;
+    let rel = signed_angle(mid, axis);
+    let mut su = snap_axis(rel.cos());
+    let mut sv = snap_axis(rel.sin());
+    let t = ((district.inner + district.outer) * 0.5 / outer_scale(settlement)).clamp(0.2, 1.0);
+    let outer = t >= 0.62;
+    if su == 0.0 && sv == 0.0 {
+        su = if rel.cos() >= 0.0 { 1.0 } else { -1.0 };
+        sv = if outer { rel.sin().signum() } else { 0.0 };
+        if sv == 0.0 {
+            sv = if rel.sin() >= 0.0 { 1.0 } else { -1.0 };
+        }
     }
-    if district.kind == DistrictKind::Center {
-        t = 0.0;
-    }
-    t = t.min(0.88);
-    (c.0 + a.cos() * r_out * t, c.1 + a.sin() * r_out * t)
+    let along = if outer { 0.64 } else { 0.34 };
+    let across = if outer { 0.50 } else { 0.26 };
+    place(su * along, sv * across)
 }
 
 struct CityBlock {
@@ -828,48 +1144,75 @@ fn push_split_line(lines: &mut Vec<SplitLine>, angle: f32, ox: f32, oy: f32) {
 }
 
 fn street_splits(settlement: &Settlement) -> Vec<SplitLine> {
-    let planned = is_planned(settlement);
-    let approaches = road_approaches(settlement);
-    let main = approaches
-        .first()
-        .map(|a| a.angle)
-        .unwrap_or_else(|| road_axes(settlement).first().copied().unwrap_or(0.0));
+    if settlement.districts.is_empty() {
+        return Vec::new();
+    }
+    let plan = footprint_kind(settlement);
+    let main = plan_axis(settlement);
     let mut lines = Vec::new();
-    for ap in &approaches {
-        push_split_line(&mut lines, ap.angle, 0.0, 0.0);
-    }
-    if approaches.is_empty() {
-        push_split_line(&mut lines, main, 0.0, 0.0);
-    }
-
-    let (extra_para, extra_perp) = match settlement.kind {
-        SettlementKind::City => (2, 2),
-        SettlementKind::Town => (1, 2),
-        SettlementKind::Village => (1, 1),
-        SettlementKind::Hamlet => (0, 1),
+    let jitter = match plan {
+        Footprint::Charter | Footprint::Bastion => 0.03,
+        Footprint::Heap => 0.14,
+        _ => 0.06,
     };
-    let jitter = if planned { 0.04 } else { 0.16 };
-    let add_offsets = |lines: &mut Vec<SplitLine>, base: f32, count: i32, salt: i32| {
+    let add_offsets = |lines: &mut Vec<SplitLine>, base: f32, count: i32, spacing: f32, salt: i32| {
+        let px = -base.sin();
+        let py = base.cos();
         for i in 0..count {
             let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
             let rank = (i / 2) + 1;
-            let off = sign
-                * rank as f32
-                * (0.26 + unit(settlement.x, settlement.y, salt + i) * 0.12);
-            let ang =
-                base + (unit(settlement.x, settlement.y, salt + 20 + i) - 0.5) * jitter;
-            let px = -base.sin();
-            let py = base.cos();
+            let off = sign * rank as f32 * spacing;
+            let ang = base + (unit(settlement.x, settlement.y, salt + i) - 0.5) * jitter;
             push_split_line(lines, ang, px * off, py * off);
         }
     };
-    add_offsets(&mut lines, main, extra_para, 80);
-    add_offsets(
-        &mut lines,
-        main + std::f32::consts::FRAC_PI_2,
-        extra_perp,
-        120,
-    );
+    let cross = main + std::f32::consts::FRAC_PI_2;
+    match plan {
+        Footprint::Street | Footprint::Ridge => {
+            // One street, burgage plots cut across it.
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            let n = match settlement.kind {
+                SettlementKind::City | SettlementKind::Town => 4,
+                _ => 5,
+            };
+            add_offsets(&mut lines, cross, n, 0.34, 120);
+        }
+        Footprint::Green => {
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            add_offsets(&mut lines, main, 2, 0.36, 80);
+            add_offsets(&mut lines, cross, 3, 0.36, 120);
+        }
+        Footprint::Fork => {
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            push_split_line(&mut lines, cross_axis(settlement), 0.0, 0.0);
+            add_offsets(&mut lines, cross, 2, 0.40, 120);
+        }
+        Footprint::Rundling => {
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            add_offsets(&mut lines, cross, 2, 0.38, 120);
+        }
+        Footprint::Riverside => {
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            add_offsets(&mut lines, main, 2, 0.32, 80);
+            add_offsets(&mut lines, cross, 3, 0.40, 120);
+        }
+        Footprint::Heap => {
+            let skew = (unit(settlement.x, settlement.y, 77) - 0.5) * 0.45;
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            add_offsets(&mut lines, main, 2, 0.34, 80);
+            add_offsets(&mut lines, cross + skew, 2, 0.34, 120);
+        }
+        Footprint::Charter | Footprint::Bastion => {
+            let (para, perp) = match settlement.kind {
+                SettlementKind::City => (3, 3),
+                SettlementKind::Town => (2, 2),
+                _ => (1, 2),
+            };
+            push_split_line(&mut lines, main, 0.0, 0.0);
+            add_offsets(&mut lines, main, para, 0.30, 80);
+            add_offsets(&mut lines, cross, perp, 0.32, 120);
+        }
+    }
     lines
 }
 
@@ -1697,4 +2040,192 @@ pub fn hit_settlement(
         }
     }
     best
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    use crate::world::settlement::District;
+
+    fn sample(kind: SettlementKind) -> Settlement {
+        Settlement {
+            x: 120.0,
+            y: 84.0,
+            kind,
+            population: 4_000,
+            radius: 2.0,
+            name: "Test".into(),
+            core_dx: 0.0,
+            core_dy: 0.0,
+            districts: vec![
+                District {
+                    kind: DistrictKind::Center,
+                    name: "Center".into(),
+                    inner: 0.0,
+                    outer: 0.2,
+                    a0: 0.0,
+                    span: TAU,
+                },
+                District {
+                    kind: DistrictKind::Market,
+                    name: "Market".into(),
+                    inner: 0.2,
+                    outer: 0.58,
+                    a0: 0.2,
+                    span: 1.2,
+                },
+                District {
+                    kind: DistrictKind::Residential,
+                    name: "Houses".into(),
+                    inner: 0.58,
+                    outer: 1.08,
+                    a0: 1.4,
+                    span: 1.4,
+                },
+                District {
+                    kind: DistrictKind::Outskirts,
+                    name: "Edge".into(),
+                    inner: 0.58,
+                    outer: 1.08,
+                    a0: 3.4,
+                    span: 1.1,
+                },
+            ],
+            road_approaches: vec![
+                RoadApproach {
+                    angle: 0.4,
+                    kind: RoadKind::Highway,
+                },
+                RoadApproach {
+                    angle: 2.1,
+                    kind: RoadKind::Secondary,
+                },
+            ],
+            streets: vec![],
+        }
+    }
+
+    fn at(kind: SettlementKind, x: f32, y: f32) -> Settlement {
+        let mut s = sample(kind);
+        s.x = x;
+        s.y = y;
+        s
+    }
+
+    fn extents(settlement: &Settlement, pts: &[(f32, f32)]) -> (f32, f32, f32) {
+        let axis = plan_axis(settlement);
+        let c = axis.cos();
+        let s = axis.sin();
+        let mut min_u = f32::INFINITY;
+        let mut max_u = f32::NEG_INFINITY;
+        let mut min_v = f32::INFINITY;
+        let mut max_v = f32::NEG_INFINITY;
+        for &(x, y) in pts {
+            let u = x * c + y * s;
+            let v = -x * s + y * c;
+            min_u = min_u.min(u);
+            max_u = max_u.max(u);
+            min_v = min_v.min(v);
+            max_v = max_v.max(v);
+        }
+        let along = max_u - min_u;
+        let across = max_v - min_v;
+        let (cx, cy) = centroid(pts);
+        (along, across, (cx * cx + cy * cy).sqrt())
+    }
+
+    #[test]
+    fn villages_use_several_historical_plans() {
+        use std::collections::HashSet;
+        let mut saw = HashSet::new();
+        for i in 0..48 {
+            for j in 0..8 {
+                let s = at(
+                    SettlementKind::Village,
+                    8.0 + i as f32 * 19.0,
+                    14.0 + j as f32 * 13.0,
+                );
+                saw.insert(format!("{:?}", footprint_kind(&s)));
+            }
+        }
+        assert!(
+            saw.len() >= 4,
+            "villages collapsed to one plan: {saw:?}"
+        );
+    }
+
+    #[test]
+    fn plans_keep_a_body_and_are_not_ellipses_only() {
+        use std::collections::HashMap;
+        let mut found: HashMap<String, Settlement> = HashMap::new();
+        for i in 0..90 {
+            for kind in [
+                SettlementKind::Hamlet,
+                SettlementKind::Village,
+                SettlementKind::Town,
+                SettlementKind::City,
+            ] {
+                let s = at(kind, 3.0 + i as f32 * 11.0, 40.0 + (i % 9) as f32 * 17.0);
+                let plan = footprint_kind(&s);
+                found
+                    .entry(format!("{kind:?}:{plan:?}"))
+                    .or_insert(s);
+            }
+        }
+        let mut saw_quad = false;
+        let mut saw_irregular = false;
+        for (_label, s) in &found {
+            let kind = s.kind;
+            let plan = footprint_kind(s);
+            let pts = plan_outline(s);
+            assert!(pts.len() >= 4, "{kind:?} {plan:?} has too few corners");
+            assert!(
+                point_in_poly(0.0, 0.0, &pts),
+                "{kind:?} {plan:?} does not contain its center"
+            );
+            assert!(
+                poly_area(&pts).abs() > 0.35,
+                "{kind:?} {plan:?} area too small"
+            );
+            let (along, across, drift) = extents(s, &pts);
+            let short = along.min(across);
+            let long = along.max(across);
+            assert!(short > 0.55, "{kind:?} {plan:?} is a tail (short {short:.2})");
+            assert!(
+                long / short < 5.0,
+                "{kind:?} {plan:?} aspect {:.2}",
+                long / short
+            );
+            assert!(drift < 0.45, "{kind:?} {plan:?} centroid drift {drift:.2}");
+            if plan == Footprint::Charter {
+                assert_eq!(pts.len(), 4, "charter town should be a quadrilateral");
+                saw_quad = true;
+            }
+            if plan == Footprint::Heap {
+                let n = pts.len();
+                let mut lens = Vec::with_capacity(n);
+                for i in 0..n {
+                    let (x0, y0) = pts[i];
+                    let (x1, y1) = pts[(i + 1) % n];
+                    lens.push(((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt());
+                }
+                let mean = lens.iter().sum::<f32>() / n as f32;
+                let var = lens.iter().map(|l| (l - mean).powi(2)).sum::<f32>() / n as f32;
+                assert!(var > 0.004, "heap outline is too regular (var {var})");
+                saw_irregular = true;
+            }
+        }
+        assert!(saw_quad, "no charter quadrilateral in the sample");
+        assert!(saw_irregular, "no irregular heap in the sample");
+    }
+
+    #[test]
+    fn city_blocks_follow_a_street_grid() {
+        let blocks = settlement_blocks(&sample(SettlementKind::City));
+        assert!(
+            blocks.len() >= 4,
+            "expected street blocks, got {}",
+            blocks.len()
+        );
+    }
 }
