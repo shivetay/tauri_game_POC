@@ -46,6 +46,7 @@ pub enum DistrictKind {
     Forest,
     Residential,
     Outskirts,
+    Military,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +74,9 @@ pub struct Settlement {
     pub districts: Vec<District>,
     pub road_approaches: Vec<RoadApproach>,
     pub streets: Vec<Street>,
+    /// Circuit wall or palisade. Independent of a military district.
+    #[serde(default)]
+    pub walled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,6 +291,7 @@ pub fn generate_sampled(sampler: &TerrainSampler) -> SettlementMap {
                 districts: Vec::new(),
                 road_approaches: Vec::new(),
                 streets: Vec::new(),
+                walled: false,
             });
             n += 1;
         }
@@ -761,6 +766,7 @@ fn layout_on_streets(
     approaches: &[RoadApproach],
     water_dir: Option<f32>,
     forest_dir: Option<f32>,
+    military: bool,
 ) -> (f32, f32, Vec<District>, Vec<Street>) {
     let lines = collect_street_lines(seed, index, kind, approaches);
     let mut streets: Vec<Street> = lines
@@ -920,6 +926,9 @@ fn layout_on_streets(
             }
         }
     }
+    if military {
+        place_military_slot(&mut outer_kind);
+    }
 
     let mut districts: Vec<District> = Vec::new();
     let mut taken: HashSet<String> = HashSet::new();
@@ -1004,11 +1013,13 @@ fn refine_street_layouts(seed: u64, sampler: &TerrainSampler, settlements: &mut 
             s.core_dy = 0.0;
             s.districts.clear();
             s.streets.clear();
+            s.walled = false;
             continue;
         }
         let index = layout_key(s.x, s.y).wrapping_add(i as u64);
         let (water_dir, forest_dir) = neighbor_dirs(sampler, s.x, s.y, s.radius);
         let approaches = s.road_approaches.clone();
+        let hold = garrison(seed, index, s.kind);
         let (core_dx, core_dy, districts, streets) = layout_on_streets(
             seed,
             index,
@@ -1016,11 +1027,49 @@ fn refine_street_layouts(seed: u64, sampler: &TerrainSampler, settlements: &mut 
             &approaches,
             water_dir,
             forest_dir,
+            hold.military,
         );
         s.core_dx = core_dx;
         s.core_dy = core_dy;
         s.districts = districts;
         s.streets = streets;
+        s.walled = hold.walled;
+    }
+}
+
+struct Garrison {
+    military: bool,
+    walled: bool,
+}
+
+/// Military ward and a defensive circuit are separate rolls.
+/// Hamlets never get either. A walled town need not have a castle ward.
+fn garrison(seed: u64, index: u64, kind: SettlementKind) -> Garrison {
+    let military_roll = unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(90));
+    let wall_roll = unit_noise(seed, CHANNEL_LAYOUT, index.wrapping_add(91));
+    let (military, walled) = match kind {
+        SettlementKind::Hamlet => (false, false),
+        SettlementKind::Village => (military_roll < 0.14, wall_roll < 0.10),
+        SettlementKind::Town => (military_roll < 0.30, wall_roll < 0.34),
+        SettlementKind::City => (military_roll < 0.50, wall_roll < 0.58),
+    };
+    Garrison { military, walled }
+}
+
+/// One outer ward. Keeps at least one outskirts slot when several exist.
+fn place_military_slot(outer: &mut [DistrictKind]) {
+    let outskirts = outer
+        .iter()
+        .filter(|k| **k == DistrictKind::Outskirts)
+        .count();
+    if outskirts >= 2 {
+        if let Some(i) = outer.iter().position(|k| *k == DistrictKind::Outskirts) {
+            outer[i] = DistrictKind::Military;
+            return;
+        }
+    }
+    if let Some(i) = outer.iter().position(|k| *k == DistrictKind::Residential) {
+        outer[i] = DistrictKind::Military;
     }
 }
 
@@ -1211,6 +1260,13 @@ fn district_name(seed: u64, index: u64, kind: DistrictKind, mid: f32, salt: u64)
         .to_string(),
         DistrictKind::Residential => format!("Dzielnica mieszkaniowa {card}"),
         DistrictKind::Outskirts => format!("Przedmieście {card}"),
+        DistrictKind::Military => pick(
+            &["Koszary", "Zamek", "Wartownia"],
+            seed,
+            CHANNEL_LAYOUT + 2,
+            index.wrapping_add(salt),
+        )
+        .to_string(),
     }
 }
 
@@ -2850,6 +2906,7 @@ mod tests {
             &approaches,
             Some(1.2),
             None,
+            false,
         );
         assert!(has_kind(&with_port, DistrictKind::Port));
         assert!(!has_kind(&with_port, DistrictKind::Forest));
@@ -2866,13 +2923,78 @@ mod tests {
             &approaches,
             None,
             Some(0.0),
+            false,
         );
         assert!(has_kind(&with_forest, DistrictKind::Forest));
         assert!(!has_kind(&with_forest, DistrictKind::Port));
 
         let (_, _, bare, _) =
-            layout_on_streets(6, 3, SettlementKind::City, &approaches, None, None);
+            layout_on_streets(6, 3, SettlementKind::City, &approaches, None, None, false);
         assert!(!has_kind(&bare, DistrictKind::Port));
         assert!(!has_kind(&bare, DistrictKind::Forest));
+    }
+
+    #[test]
+    fn garrison_is_selective() {
+        let mut city_military = 0;
+        let mut city_walls = 0;
+        let mut city_both = 0;
+        let mut city_neither = 0;
+        let mut town_military = 0;
+        let mut village_military = 0;
+        for index in 0..80 {
+            let city = garrison(6, index, SettlementKind::City);
+            if city.military {
+                city_military += 1;
+            }
+            if city.walled {
+                city_walls += 1;
+            }
+            if city.military && city.walled {
+                city_both += 1;
+            }
+            if !city.military && !city.walled {
+                city_neither += 1;
+            }
+            let hamlet = garrison(6, index, SettlementKind::Hamlet);
+            assert!(!hamlet.military && !hamlet.walled);
+            if garrison(6, index, SettlementKind::Town).military {
+                town_military += 1;
+            }
+            if garrison(6, index, SettlementKind::Village).military {
+                village_military += 1;
+            }
+        }
+        assert!(city_military > 0 && city_military < 80);
+        assert!(city_walls > 0 && city_walls < 80);
+        assert!(city_both > 0, "expected some walled castles");
+        assert!(city_neither > 0, "expected some open cities without a garrison");
+        assert!(town_military > 0 && town_military < city_military);
+        assert!(village_military < town_military);
+
+        let approaches = vec![RoadApproach {
+            angle: 0.4,
+            kind: RoadKind::Highway,
+        }];
+        let (_, _, with_garrison, _) = layout_on_streets(
+            6,
+            3,
+            SettlementKind::City,
+            &approaches,
+            None,
+            None,
+            true,
+        );
+        assert!(has_kind(&with_garrison, DistrictKind::Military));
+        assert!(has_kind(&with_garrison, DistrictKind::Outskirts));
+        assert!(has_kind(&with_garrison, DistrictKind::Market));
+
+        let map = generate(seed_config(6));
+        for s in &map.settlements {
+            if s.kind == SettlementKind::Hamlet || s.population < VILLAGE_DISTRICT_POP_MIN {
+                assert!(!s.walled);
+                assert!(!has_kind(&s.districts, DistrictKind::Military));
+            }
+        }
     }
 }

@@ -24,8 +24,9 @@ Workflows: `.cursor/skills/`.
 2. Plan steps + success criteria + file list.
 3. Show the plan to the user **before** editing code.
 4. Minimal diff. Do not clean adjacent code. Do not add packages unless the task requires a new UI/runtime capability.
-5. Clean up your own mess: no unused imports/vars/types/files, no commented-out code, no debug logs.
-6. Verify: `cargo test --lib` in `src-tauri`, seed determinism, run the binary (`cargo run` in `src-tauri`).
+5. **No voluntary extras.** A change may only do what the user asked. Do not redesign markers/icons, restyle UI, rename labels, tweak colors, swap shapes, or “improve” anything that was not requested — even if it seems related or nicer. If something looks wrong but was not named, ask first.
+6. Clean up your own mess: no unused imports/vars/types/files, no commented-out code, no debug logs.
+7. Verify: `cargo test --lib` in `src-tauri`, seed determinism, run the binary (`cargo run` in `src-tauri`).
 
 Skill: `.cursor/skills/change-flow/SKILL.md`.
 
@@ -43,3 +44,4 @@ Skills: `terrain-generation`, `map-ui`.
 - Leave no artifacts: unused vars/imports, dead exports, commented-out code, debug logs, `allow(dead_code)` instead of deletion.
 - Code comments: English. Agent files (`AGENTS.md`, `.cursor/rules`, `.cursor/skills`): English. README and `docs/`: Polish.
 - After a generation change, baseline seed `6` (Ellipse). Other `seed % 6` values must keep the same profile.
+- **Scope lock:** never ship unsolicited changes (icons, markers, colors, labels, layout polish, refactors) alongside a fix or feature. Only the requested delta.
