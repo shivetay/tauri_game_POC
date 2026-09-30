@@ -5,6 +5,7 @@ pub mod ecology;
 pub mod elevation;
 pub mod grid;
 pub mod noise;
+pub mod npc;
 pub mod prng;
 pub mod ridge;
 pub mod river;
