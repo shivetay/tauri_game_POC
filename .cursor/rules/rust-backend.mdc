@@ -9,7 +9,7 @@ globs: src-tauri/**/*.rs
 - All terrain is generated in `world/` — never move generation into the UI layer
 - Keep determinism: the same (seed, params, x, y) must produce the same result
 - Seed is `u64`; profile: `seed % 6`
-- UI: `app.rs` (egui). Compose: `render.rs`. Settlements/roads: `settlements_draw.rs`. Ecology wash: `ecology_draw.rs`. Biome colors: `colors.rs`
+- UI: `app.rs` (egui via Bevy). Session: `session.rs`. Compose: `render.rs`. Settlements/roads: `settlements_draw.rs`. Ecology wash: `ecology_draw.rs`. Biome colors: `colors.rs`
 - Params: `TerrainGenParams` → `apply_to(&mut WorldConfig)`
 
 ## Code conventions

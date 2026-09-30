@@ -1,271 +1,24 @@
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::Instant;
-
-use eframe::egui::{self, Color32, Sense, TextureHandle, TextureOptions, Vec2};
-use egui::{pos2, Align2, FontId, RichText};
+use bevy_egui::egui::{self, pos2, Align2, Color32, FontId, RichText, Sense, Vec2};
 
 use crate::colors::BIOMES;
-use crate::game_loop::GameLoop;
-use crate::game_time::SPEED_MULTIPLIERS;
-use crate::perf::PerfStats;
 use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
-use crate::render::{compose_map_image, ComposeInput};
+use crate::game_time::SPEED_MULTIPLIERS;
+use crate::render::{compose_map_rgba, ComposeInput};
+use crate::session::{
+    biome_label, cell_world_at_pixel, format_pop, is_land_biome, player_at, MapSession,
+    Cardinal, LodLevel, VISION_RADIUS,
+};
 use crate::settlements_draw::{
-    district_info, format_settlement_label, hit_settlement, road_info, settlement_info, RoadDetail,
-    SettlementDrawStyle, SettlementHit, WorldBounds, DISTRICT_KIND_ORDER, ROAD_KIND_ORDER,
-    SETTLEMENT_KIND_ORDER,
+    district_info, format_settlement_label, hit_settlement, road_info, settlement_info,
+    SettlementHit, DISTRICT_KIND_ORDER, ROAD_KIND_ORDER, SETTLEMENT_KIND_ORDER,
 };
-use crate::world::config::{TerrainGenParams, WorldConfig};
-use crate::world::ecology::{
-    generate_chunk_ecology_sampled, generate_region_ecology_sampled, ChunkEcologyMap,
-    RegionEcologyMap,
-};
-use crate::world::elevation::{is_water_biome, HIGH_M};
-use crate::world::grid::{
-    generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
-};
-use crate::world::sampler::TerrainSampler;
-use crate::world::npc::{generate as generate_npcs, NpcMap};
-use crate::world::settlement::{
-    generate_sampled as generate_settlements_sampled, Road, RoadKind, Settlement, SettlementKind,
-    SettlementMap,
-};
-use crate::world::types::{ChunkId, RegionId, TerrainGrid, TileType};
-
-/// On-road speed: 5 km/h with 1 world unit = 1 km.
-const WALK_ROAD_WU_PER_GAME_HOUR: f32 = 5.0;
-/// Off-road speed (no visible road underfoot).
-const WALK_OFFROAD_WU_PER_GAME_HOUR: f32 = 2.0;
-/// Distance below which the player is considered "already at" a destination.
-const AT_PLACE_EPS: f32 = 0.35;
-/// Vision / fog radius in world units (km).
-const VISION_RADIUS: f32 = 3.0;
-/// How close to a road polyline counts as on the road ribbon (bridges / walkability).
-const ROAD_TRAVEL_EPS: f32 = 1.0;
-/// Max distance to snap start/goal onto the road network for routed travel.
-const ROAD_SNAP_EPS: f32 = 5.0;
-/// Join nearby road points (crossings) into one graph.
-const ROAD_NODE_LINK_EPS: f32 = 1.5;
-/// |dot(move, segment)| above this ⇒ traveling along the road (not merely crossing).
-const ROAD_ALIGN_MIN: f32 = 0.85;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Cardinal {
-    North,
-    South,
-    East,
-    West,
-}
-
-impl Cardinal {
-    const ALL: [Cardinal; 4] = [
-        Cardinal::North,
-        Cardinal::South,
-        Cardinal::East,
-        Cardinal::West,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::North => "Północ",
-            Self::South => "Południe",
-            Self::East => "Wschód",
-            Self::West => "Zachód",
-        }
-    }
-
-    fn delta(self) -> (f32, f32) {
-        match self {
-            Self::North => (0.0, -1.0),
-            Self::South => (0.0, 1.0),
-            Self::West => (-1.0, 0.0),
-            Self::East => (1.0, 0.0),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LodLevel {
-    Global,
-    Region(RegionId),
-    Chunk { region: RegionId, chunk: ChunkId },
-}
-
-impl LodLevel {
-    fn bounds(self, config: &WorldConfig) -> WorldBounds {
-        match self {
-            Self::Global => WorldBounds {
-                x0: 0.0,
-                y0: 0.0,
-                span: config.world_width as f32,
-            },
-            Self::Region(region) => WorldBounds {
-                x0: region.rx as f32 * config.region_size as f32,
-                y0: region.ry as f32 * config.region_size as f32,
-                span: config.region_size as f32,
-            },
-            Self::Chunk { region, chunk } => WorldBounds {
-                x0: region.rx as f32 * config.region_size as f32
-                    + chunk.cx as f32 * config.chunk_size as f32,
-                y0: region.ry as f32 * config.region_size as f32
-                    + chunk.cy as f32 * config.chunk_size as f32,
-                span: config.chunk_size as f32,
-            },
-        }
-    }
-
-    fn idle_label(self, has_player_spawn: bool) -> String {
-        match self {
-            Self::Global => "Mapa świata — kliknij region · kliknij miasto po info".to_string(),
-            Self::Region(r) => {
-                format!("Region ({}, {}) — kliknij obszar · kliknij miasto po info", r.rx, r.ry)
-            }
-            Self::Chunk { chunk, .. } => {
-                if has_player_spawn {
-                    format!(
-                        "Obszar ({}, {}) — kliknij ląd, by iść · biom/miasto",
-                        chunk.cx, chunk.cy
-                    )
-                } else {
-                    format!(
-                        "Obszar ({}, {}) — kliknij ląd lub osadę (Spawn) · biom/gatunki",
-                        chunk.cx, chunk.cy
-                    )
-                }
-            }
-        }
-    }
-
-    fn back_label(self) -> Option<String> {
-        match self {
-            Self::Global => None,
-            Self::Region(_) => Some("← Mapa świata".to_string()),
-            Self::Chunk { region, .. } => Some(format!("← Region ({}, {})", region.rx, region.ry)),
-        }
-    }
-}
-
-struct GenRequest {
-    id: u64,
-    seed: u64,
-    params: TerrainGenParams,
-    lod: LodLevel,
-    /// Reuse settlements when only LOD changed (same seed/params).
-    settlements: Option<SettlementMap>,
-    /// Reuse NPCs with settlements (same seed/params).
-    npcs: Option<NpcMap>,
-}
-
-struct GenResult {
-    id: u64,
-    seed: u64,
-    lod: LodLevel,
-    grid: TerrainGrid,
-    settlements: SettlementMap,
-    npcs: NpcMap,
-    habitat: Option<RegionEcologyMap>,
-    life: Option<ChunkEcologyMap>,
-}
-
-/// Cached terrain view for one LOD — avoids regenerating on zoom/back.
-#[derive(Clone)]
-struct LodView {
-    grid: TerrainGrid,
-    habitat: Option<RegionEcologyMap>,
-    life: Option<ChunkEcologyMap>,
-}
-
-#[derive(Default)]
-struct LodCache {
-    global: Option<LodView>,
-    region: Option<(RegionId, LodView)>,
-    chunk: Option<(RegionId, ChunkId, LodView)>,
-}
-
-impl LodCache {
-    fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    fn store(&mut self, lod: LodLevel, view: LodView) {
-        match lod {
-            LodLevel::Global => self.global = Some(view),
-            LodLevel::Region(region) => self.region = Some((region, view)),
-            LodLevel::Chunk { region, chunk } => self.chunk = Some((region, chunk, view)),
-        }
-    }
-
-    fn get(&self, lod: LodLevel) -> Option<&LodView> {
-        match lod {
-            LodLevel::Global => self.global.as_ref(),
-            LodLevel::Region(region) => self
-                .region
-                .as_ref()
-                .filter(|(r, _)| *r == region)
-                .map(|(_, v)| v),
-            LodLevel::Chunk { region, chunk } => self
-                .chunk
-                .as_ref()
-                .filter(|(r, c, _)| *r == region && *c == chunk)
-                .map(|(_, _, v)| v),
-        }
-    }
-}
-
-struct PlaceRow {
-    index: usize,
-    x: f32,
-    y: f32,
-    name: String,
-    kind: String,
-    kind_rank: u8,
-    population: u32,
-    walled: bool,
-}
+use crate::world::settlement::{SettlementKind, SettlementMap};
+use crate::world::types::{ChunkId, RegionId};
 
 pub struct MapApp {
-    seed: u64,
-    draft_seed: String,
-    seed_error: Option<String>,
-    params: TerrainGenParams,
-    draft_params: TerrainGenParams,
-    show_seed_info: bool,
-    lod: LodLevel,
-    grid: Option<TerrainGrid>,
-    settlements: Option<SettlementMap>,
-    npcs: Option<NpcMap>,
-    habitat: Option<RegionEcologyMap>,
-    life: Option<ChunkEcologyMap>,
-    texture: Option<TextureHandle>,
-    selected_info: Option<String>,
-    selected_hit: Option<SettlementHit>,
-    /// Land cell selected on Chunk LOD; enables the Spawn button.
-    pending_spawn: Option<(f32, f32)>,
-    /// Confirmed player start (fixed); enables gameplay after Spawn.
-    player_spawn: Option<(f32, f32)>,
-    /// Current marker position.
-    player_pos: Option<(f32, f32)>,
-    /// Remaining walk waypoints (first = current leg target). Prefer road network.
-    move_path: Vec<(f32, f32)>,
-    /// Cached terrain for walkability (rebuilt when seed/params change).
-    terrain: Option<TerrainSampler>,
-    /// Settlements the player has visited (floor coords key).
-    known_places: HashSet<(i32, i32)>,
-    /// Chunks the player has entered — stay permanently visible on the map.
-    known_chunks: HashSet<(RegionId, ChunkId)>,
-    loading: bool,
-    request_id: u64,
-    lod_cache: LodCache,
-    game: GameLoop,
-    last_frame: Instant,
-    perf: PerfStats,
-    tx: Sender<GenRequest>,
-    rx: Receiver<GenResult>,
+    pub session: MapSession,
 }
 
 impl Default for MapApp {
@@ -276,384 +29,92 @@ impl Default for MapApp {
 
 impl MapApp {
     pub fn new() -> Self {
-        let (tx_req, rx_req) = mpsc::channel::<GenRequest>();
-        let (tx_res, rx_res) = mpsc::channel::<GenResult>();
-
-        thread::spawn(move || {
-            while let Ok(req) = rx_req.recv() {
-                let _ = tx_res.send(generate_job(req));
-            }
-        });
-
-        let mut app = Self {
-            seed: 6,
-            draft_seed: "6".to_string(),
-            seed_error: None,
-            params: TerrainGenParams::default(),
-            draft_params: TerrainGenParams::default(),
-            show_seed_info: false,
-            lod: LodLevel::Global,
-            grid: None,
-            settlements: None,
-            npcs: None,
-            habitat: None,
-            life: None,
-            texture: None,
-            selected_info: None,
-            selected_hit: None,
-            pending_spawn: None,
-            player_spawn: None,
-            player_pos: None,
-            move_path: Vec::new(),
-            terrain: None,
-            known_places: HashSet::new(),
-            known_chunks: HashSet::new(),
-            loading: false,
-            request_id: 0,
-            lod_cache: LodCache::default(),
-            game: GameLoop::new(),
-            last_frame: Instant::now(),
-            perf: PerfStats::new(),
-            tx: tx_req,
-            rx: rx_res,
-        };
-        app.queue_generate(true);
-        app
-    }
-
-    fn config(&self) -> WorldConfig {
-        let mut config = WorldConfig::default();
-        config.seed = self.seed;
-        self.params.apply_to(&mut config);
-        config
-    }
-
-    fn current_view(&self) -> Option<LodView> {
-        Some(LodView {
-            grid: self.grid.clone()?,
-            habitat: self.habitat.clone(),
-            life: self.life.clone(),
-        })
-    }
-
-    fn apply_view(&mut self, lod: LodLevel, view: LodView, ctx: &egui::Context) {
-        self.lod = lod;
-        self.grid = Some(view.grid);
-        self.habitat = view.habitat;
-        self.life = view.life;
-        self.loading = false;
-        self.selected_info = None;
-        self.selected_hit = None;
-        self.rebuild_texture(ctx);
-    }
-
-    /// Zoom / back: reuse cached LOD when possible; otherwise generate.
-    fn set_lod(&mut self, lod: LodLevel, ctx: &egui::Context) {
-        if let Some(view) = self.current_view() {
-            self.lod_cache.store(self.lod, view);
-        }
-        if let Some(view) = self.lod_cache.get(lod).cloned() {
-            self.apply_view(lod, view, ctx);
-            return;
-        }
-        self.lod = lod;
-        self.queue_generate(false);
-    }
-
-    fn queue_generate(&mut self, refresh_settlements: bool) {
-        if refresh_settlements {
-            self.lod_cache.clear();
-            self.pending_spawn = None;
-            self.player_spawn = None;
-            self.player_pos = None;
-            self.move_path.clear();
-            self.terrain = None;
-            self.known_places.clear();
-            self.known_chunks.clear();
-        }
-        self.request_id += 1;
-        self.loading = true;
-        self.selected_info = None;
-        self.selected_hit = None;
-        let (settlements, npcs) = if refresh_settlements {
-            (None, None)
-        } else {
-            (self.settlements.clone(), self.npcs.clone())
-        };
-        let _ = self.tx.send(GenRequest {
-            id: self.request_id,
-            seed: self.seed,
-            params: self.params,
-            lod: self.lod,
-            settlements,
-            npcs,
-        });
-    }
-
-    fn apply_seed_and_params(&mut self) {
-        match self.draft_seed.trim().parse::<u64>() {
-            Ok(seed) => {
-                let seed_changed = seed != self.seed;
-                self.seed = seed;
-                self.params = self.draft_params;
-                self.seed_error = None;
-                self.lod = LodLevel::Global;
-                if seed_changed {
-                    self.game.reset_time();
-                }
-                self.queue_generate(true);
-            }
-            Err(_) => {
-                self.seed_error = Some("Seed musi być nieujemną liczbą całkowitą.".to_string());
-            }
+        Self {
+            session: MapSession::new(),
         }
     }
 
-    fn random_seed(&mut self) {
-        let seed = rand_u32() as u64;
-        self.draft_seed = seed.to_string();
-        self.seed = seed;
-        self.seed_error = None;
-        self.lod = LodLevel::Global;
-        self.game.reset_time();
-        self.queue_generate(true);
+    pub fn mark_clean(&mut self) {
+        self.session.texture_dirty = false;
     }
 
-    fn go_back(&mut self, ctx: &egui::Context) {
-        let next = match self.lod {
-            LodLevel::Chunk { region, .. } => LodLevel::Region(region),
-            LodLevel::Region(_) => LodLevel::Global,
-            LodLevel::Global => return,
-        };
-        self.set_lod(next, ctx);
+    pub fn poll_results(&mut self) {
+        self.session.poll_results();
     }
 
-    fn view_settlements(&self) -> Vec<Settlement> {
-        let Some(map) = &self.settlements else {
-            return Vec::new();
-        };
-        match self.lod {
-            LodLevel::Global => map
-                .settlements
-                .iter()
-                .filter(|s| matches!(s.kind, SettlementKind::City | SettlementKind::Town))
-                .cloned()
-                .collect(),
-            _ => map.settlements.clone(),
-        }
+    pub fn tick_simulation(&mut self) {
+        self.session.tick_simulation();
     }
 
-    fn roads(&self) -> &[Road] {
-        self.settlements
-            .as_ref()
-            .map(|m| m.roads.as_slice())
-            .unwrap_or(&[])
+    pub fn tick_perf(&mut self) {
+        self.session.perf.tick();
     }
 
-    fn ensure_terrain(&mut self) {
-        if self.terrain.is_none() {
-            self.terrain = Some(TerrainSampler::new(self.config()));
-        }
-    }
-
-    fn road_detail(&self) -> RoadDetail {
-        match self.lod {
-            LodLevel::Global => RoadDetail::Main,
-            LodLevel::Region(_) => RoadDetail::Region,
-            LodLevel::Chunk { .. } => RoadDetail::Close,
-        }
-    }
-
-    fn settlement_style(&self) -> SettlementDrawStyle {
-        match self.lod {
-            LodLevel::Global => SettlementDrawStyle::Marker,
-            _ => SettlementDrawStyle::Plan,
-        }
-    }
-
-    fn in_vision(&self, wx: f32, wy: f32) -> bool {
-        let Some(pos) = self.player_pos else {
-            return true;
-        };
-        let dx = wx - pos.0;
-        let dy = wy - pos.1;
-        dx * dx + dy * dy <= VISION_RADIUS * VISION_RADIUS
-    }
-
-    /// Visible on the map: vision circle or an explored chunk.
-    fn world_revealed(&self, wx: f32, wy: f32, config: &WorldConfig) -> bool {
-        if self.player_spawn.is_none() {
-            return true;
-        }
-        if self.in_vision(wx, wy) {
-            return true;
-        }
-        world_to_chunk(wx, wy, config)
-            .map(|(r, c)| self.known_chunks.contains(&(r, c)))
-            .unwrap_or(false)
-    }
-
-    fn explore_player_chunk(&mut self, config: &WorldConfig) -> bool {
-        let Some(pos) = self.player_pos else {
-            return false;
-        };
-        let Some(ch) = world_to_chunk(pos.0, pos.1, config) else {
-            return false;
-        };
-        self.known_chunks.insert(ch)
-    }
-
-    fn known_bounds_list(&self, config: &WorldConfig) -> Vec<WorldBounds> {
-        self.known_chunks
-            .iter()
-            .map(|&(region, chunk)| LodLevel::Chunk { region, chunk }.bounds(config))
-            .collect()
-    }
-
-    fn place_key(x: f32, y: f32) -> (i32, i32) {
-        (x.floor() as i32, y.floor() as i32)
-    }
-
-    fn is_known_place(&self, x: f32, y: f32) -> bool {
-        self.known_places.contains(&Self::place_key(x, y))
-    }
-
-    /// Mark settlements the player is currently standing at as visited.
-    fn update_visited_places(&mut self) -> bool {
-        let Some(pos) = self.player_pos else {
-            return false;
-        };
-        let Some(map) = &self.settlements else {
-            return false;
-        };
-        let mut changed = false;
-        for s in &map.settlements {
-            let r = s.radius.max(AT_PLACE_EPS);
-            let dx = s.x - pos.0;
-            let dy = s.y - pos.1;
-            if dx * dx + dy * dy <= r * r {
-                changed |= self.known_places.insert(Self::place_key(s.x, s.y));
-            }
-        }
-        changed
-    }
-
-    fn clamp_to_world(&self, wx: f32, wy: f32, config: &WorldConfig) -> (f32, f32) {
-        let max = (config.world_width as f32 - 0.05).max(0.05);
-        (wx.clamp(0.05, max), wy.clamp(0.05, max))
-    }
-
-    fn rebuild_texture(&mut self, ctx: &egui::Context) {
-        let Some(grid) = &self.grid else {
-            return;
-        };
-        let config = self.config();
+    pub fn compose_rgba(&self) -> Option<(usize, usize, Vec<u8>)> {
+        let s = &self.session;
+        let grid = s.grid.as_ref()?;
+        let config = s.config();
         let chunks_per_side = (config.region_size / config.chunk_size).max(1);
         let cell_size = grid.width as f32 / chunks_per_side as f32;
-        let settlements = self.view_settlements();
-        let explored = self.known_bounds_list(&config);
-        let (fog_explored, fog_vision) = if self.player_spawn.is_some() {
+        let settlements = s.view_settlements();
+        let explored = s.known_bounds_list(&config);
+        let (fog_explored, fog_vision) = if s.player_spawn.is_some() {
             (
                 Some(explored.as_slice()),
-                self.player_pos.map(|(x, y)| (x, y, VISION_RADIUS)),
+                s.player_pos.map(|(x, y)| (x, y, VISION_RADIUS)),
             )
         } else {
             (None, None)
         };
-        let image = compose_map_image(ComposeInput {
+        Some(compose_map_rgba(ComposeInput {
             grid,
             cell_size,
-            show_grid: !matches!(self.lod, LodLevel::Chunk { .. }),
-            bounds: self.lod.bounds(&config),
+            show_grid: !matches!(s.lod, LodLevel::Chunk { .. }),
+            bounds: s.lod.bounds(&config),
             settlements: &settlements,
-            roads: self.roads(),
-            road_detail: self.road_detail(),
-            settlement_style: self.settlement_style(),
-            habitat: self.habitat.as_ref(),
-            life: self.life.as_ref(),
-            hovered: self.selected_hit.as_ref(),
-            player_spawn: self.player_pos.or(self.player_spawn),
+            roads: s.roads(),
+            road_detail: s.road_detail(),
+            settlement_style: s.settlement_style(),
+            habitat: s.habitat.as_ref(),
+            life: s.life.as_ref(),
+            hovered: s.selected_hit.as_ref(),
+            player_spawn: s.player_pos.or(s.player_spawn),
             fog_explored,
             fog_vision,
+        }))
+    }
+
+    pub fn draw_ui(
+        &mut self,
+        viewport_ui: &mut egui::Ui,
+        map_texture: Option<egui::TextureId>,
+        map_size: egui::Vec2,
+    ) {
+        viewport_ui.ctx().request_repaint();
+
+        egui::Panel::left("controls")
+            .resizable(true)
+            .default_size(280.0)
+            .show(viewport_ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.ui_controls(ui));
+            });
+
+        let right_width = if self.session.show_place_list() { 248.0 } else { 200.0 };
+        egui::Panel::right("game_clock")
+            .resizable(false)
+            .default_size(right_width)
+            .show(viewport_ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.ui_game_clock(ui);
+                });
+            });
+
+        egui::CentralPanel::default().show(viewport_ui, |ui| {
+            self.ui_map(ui, map_texture, map_size);
         });
-        self.texture = Some(ctx.load_texture("terrain", image, TextureOptions::NEAREST));
     }
 
-    fn confirm_spawn(&mut self, ctx: &egui::Context) {
-        let Some(pos) = self.pending_spawn else {
-            return;
-        };
-        self.player_spawn = Some(pos);
-        self.player_pos = Some(pos);
-        self.move_path.clear();
-        self.pending_spawn = None;
-        self.known_places.clear();
-        self.known_chunks.clear();
-        let config = self.config();
-        self.explore_player_chunk(&config);
-        self.update_visited_places();
-        self.selected_info = Some(format!(
-            "Start gracza: ({:.0}, {:.0}) — kliknij ląd, by iść",
-            pos.0, pos.1
-        ));
-        self.rebuild_texture(ctx);
-    }
-
-    fn cancel_pending_spawn(&mut self, ctx: &egui::Context) {
-        self.pending_spawn = None;
-        self.selected_info = None;
-        self.rebuild_texture(ctx);
-    }
-
-    fn show_place_list(&self) -> bool {
-        self.player_spawn.is_none()
-            && self.pending_spawn.is_none()
-            && !self.loading
-            && self.grid.is_some()
-            && matches!(self.lod, LodLevel::Region(_) | LodLevel::Chunk { .. })
-    }
-
-    fn places_in_view(&self) -> Vec<PlaceRow> {
-        let Some(map) = &self.settlements else {
-            return Vec::new();
-        };
-        let bounds = self.lod.bounds(&self.config());
-        let mut rows: Vec<PlaceRow> = map
-            .settlements
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| {
-                s.x >= bounds.x0
-                    && s.y >= bounds.y0
-                    && s.x < bounds.x0 + bounds.span
-                    && s.y < bounds.y0 + bounds.span
-            })
-            .map(|(index, s)| PlaceRow {
-                index,
-                x: s.x,
-                y: s.y,
-                name: s.name.clone(),
-                kind: settlement_info(s.kind).label.to_string(),
-                kind_rank: match s.kind {
-                    SettlementKind::City => 0,
-                    SettlementKind::Town => 1,
-                    SettlementKind::Village => 2,
-                    SettlementKind::Hamlet => 3,
-                },
-                population: s.population,
-                walled: s.walled,
-            })
-            .collect();
-        rows.sort_by(|a, b| {
-            a.kind_rank
-                .cmp(&b.kind_rank)
-                .then(b.population.cmp(&a.population))
-                .then(a.name.cmp(&b.name))
-        });
-        rows
-    }
-
-    fn ui_place_list(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_place_list(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.label(RichText::new("Miejsca").strong());
         ui.label(
@@ -662,34 +123,34 @@ impl MapApp {
                 .weak(),
         );
         ui.add_space(4.0);
-        let rows = self.places_in_view();
+        let rows = self.session.places_in_view();
         if rows.is_empty() {
             ui.label(RichText::new("Brak osad w tym widoku.").small());
             return;
         }
         for row in rows {
-            let open = self
+            let open = self.session
                 .selected_hit
                 .is_some_and(|h| h.settlement_index == row.index);
             ui.group(|ui| {
                 let title = ui.selectable_label(open, RichText::new(&row.name).strong());
                 if title.clicked() {
                     if open {
-                        self.selected_hit = None;
-                        self.selected_info = None;
+                        self.session.selected_hit = None;
+                        self.session.selected_info = None;
                     } else {
-                        self.selected_hit = Some(SettlementHit {
+                        self.session.selected_hit = Some(SettlementHit {
                             settlement_index: row.index,
                             district_index: None,
                         });
-                        self.selected_info = Some(format!(
+                        self.session.selected_info = Some(format!(
                             "{} · {} · {} mieszk.",
                             row.name,
                             row.kind,
                             format_pop(row.population)
                         ));
                     }
-                    self.rebuild_texture(ctx);
+                    self.session.texture_dirty = true;
                 }
                 ui.label(format!(
                     "{} · {} mieszk.",
@@ -701,7 +162,7 @@ impl MapApp {
                 }
                 if open {
                     let district_rows: Option<Vec<(String, String)>> = self
-                        .settlements
+                        .session.settlements
                         .as_ref()
                         .and_then(|m| m.settlements.get(row.index))
                         .map(|settlement| {
@@ -723,7 +184,7 @@ impl MapApp {
                             ui.add_space(4.0);
                             ui.label(RichText::new("NPC").small().strong());
                             let roster = self
-                                .npcs
+                                .session.npcs
                                 .as_ref()
                                 .map(|m| m.in_settlement(row.index))
                                 .unwrap_or(&[]);
@@ -738,7 +199,7 @@ impl MapApp {
                                 }
                             }
                         } else {
-                            let selected_di = self.selected_hit.and_then(|h| {
+                            let selected_di = self.session.selected_hit.and_then(|h| {
                                 if h.settlement_index == row.index {
                                     h.district_index
                                 } else {
@@ -751,24 +212,24 @@ impl MapApp {
                                     .selectable_label(selected, RichText::new(label).small())
                                     .clicked()
                                 {
-                                    self.selected_hit = Some(SettlementHit {
+                                    self.session.selected_hit = Some(SettlementHit {
                                         settlement_index: row.index,
                                         district_index: Some(di),
                                     });
-                                    self.selected_info = Some(format!(
+                                    self.session.selected_info = Some(format!(
                                         "{} · {} · {} mieszk.",
                                         row.name,
                                         name,
                                         format_pop(row.population)
                                     ));
-                                    self.rebuild_texture(ctx);
+                                    self.session.texture_dirty = true;
                                 }
                             }
                             if let Some(di) = selected_di {
                                 ui.add_space(4.0);
                                 ui.label(RichText::new("NPC").small().strong());
                                 let roster = self
-                                    .npcs
+                                    .session.npcs
                                     .as_ref()
                                     .map(|m| m.in_district(row.index, di))
                                     .unwrap_or(&[]);
@@ -793,9 +254,9 @@ impl MapApp {
                         )
                         .clicked()
                     {
-                        self.pending_spawn = Some((row.x, row.y));
-                        self.confirm_spawn(ctx);
-                        self.focus_player(ctx);
+                        self.session.pending_spawn = Some((row.x, row.y));
+                        self.session.confirm_spawn();
+                        self.session.focus_player();
                     }
                 }
             });
@@ -803,88 +264,23 @@ impl MapApp {
         }
     }
 
-    fn set_walk_target(&mut self, wx: f32, wy: f32, ctx: &egui::Context) {
-        let config = self.config();
-        let target = self.clamp_to_world(wx, wy, &config);
-        let Some(pos) = self.player_pos else {
-            return;
-        };
-        if player_at(pos, target) {
-            self.selected_info = Some(format!(
-                "Już tu jesteś ({:.0}, {:.0})",
-                target.0, target.1
-            ));
+    fn ui_travel(&mut self, ui: &mut egui::Ui) {
+        if self.session.player_spawn.is_none() {
             return;
         }
-        self.ensure_terrain();
-        let roads = self
-            .settlements
-            .as_ref()
-            .map(|m| m.roads.as_slice())
-            .unwrap_or(&[]);
-        let (raw_path, via_road) = if let Some(route) = road_route(pos, target, roads) {
-            (route, true)
-        } else {
-            (vec![target], false)
-        };
-        let path = {
-            let sampler = self.terrain.as_ref().expect("terrain after ensure");
-            prepare_walk_path(sampler, roads, pos, &raw_path)
-        };
-        if path.is_empty() {
-            self.move_path.clear();
-            self.selected_info =
-                Some("Przejście zablokowane (woda lub góry).".to_string());
-            self.rebuild_texture(ctx);
-            return;
-        }
-        let dest = *path.last().unwrap();
-        let full = player_at(dest, target);
-        self.move_path = path;
-        self.selected_info = Some(if via_road && full {
-            format!("Po drodze do ({:.0}, {:.0})", target.0, target.1)
-        } else if full {
-            format!("W drodze do ({:.0}, {:.0})", target.0, target.1)
-        } else {
-            format!(
-                "Przeszkoda — idę do ({:.0}, {:.0})",
-                dest.0, dest.1
-            )
-        });
-        self.rebuild_texture(ctx);
-    }
-
-    fn focus_player(&mut self, ctx: &egui::Context) {
-        let Some(pos) = self.player_pos else {
-            return;
-        };
-        let config = self.config();
-        let Some((region, chunk)) = world_to_chunk(pos.0, pos.1, &config) else {
-            return;
-        };
-        self.selected_hit = None;
-        self.selected_info = Some(format!("Gracz: ({:.1}, {:.1})", pos.0, pos.1));
-        self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
-    }
-
-    fn ui_travel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.player_spawn.is_none() {
-            return;
-        }
-        let config = self.config();
-
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(6.0);
         ui.label(RichText::new("Podróż").strong());
 
         ui.label(RichText::new("Znane miejsca").small());
-        let places = known_place_dests(&self.settlements, &self.known_places, &config);
+        let places = self.session.known_travel_dests();
         if places.is_empty() {
             ui.label(RichText::new("Odwiedź osadę, by ją zapamiętać").small().weak());
         } else {
             for dest in &places {
                 let here = self
+                    .session
                     .player_pos
                     .map(|p| player_at(p, (dest.x, dest.y)))
                     .unwrap_or(false);
@@ -895,12 +291,12 @@ impl MapApp {
                 };
                 if ui
                     .add_enabled(
-                        !here && !self.loading,
+                        !here && !self.session.loading,
                         egui::Button::new(label).min_size(Vec2::new(ui.available_width(), 0.0)),
                     )
                     .clicked()
                 {
-                    self.go_to_destination(dest.x, dest.y, dest.region, dest.chunk, ctx);
+                    self.session.go_to_destination(dest.x, dest.y, dest.region, dest.chunk);
                 }
             }
         }
@@ -910,227 +306,42 @@ impl MapApp {
         for dir in Cardinal::ALL {
             if ui
                 .add_enabled(
-                    !self.loading,
+                    !self.session.loading,
                     egui::Button::new(dir.label()).min_size(Vec2::new(ui.available_width(), 0.0)),
                 )
                 .clicked()
             {
-                self.walk_toward_cardinal(dir, ctx);
+                self.session.walk_toward_cardinal(dir);
             }
         }
     }
 
-    /// Prefer a road visible in vision in that direction; otherwise a short off-road step.
-    fn walk_toward_cardinal(&mut self, dir: Cardinal, ctx: &egui::Context) {
-        let Some(pos) = self.player_pos else {
-            return;
-        };
-        let config = self.config();
-        if let Some(target) = road_target_in_direction(pos, dir, self.roads()) {
-            self.set_walk_target(target.0, target.1, ctx);
-            return;
-        }
-        let (dx, dy) = dir.delta();
-        let step = VISION_RADIUS * 1.5;
-        let target = self.clamp_to_world(pos.0 + dx * step, pos.1 + dy * step, &config);
-        self.set_walk_target(target.0, target.1, ctx);
-    }
-
-    fn go_to_destination(
-        &mut self,
-        wx: f32,
-        wy: f32,
-        region: RegionId,
-        chunk: ChunkId,
-        ctx: &egui::Context,
-    ) {
-        if !self.is_known_place(wx, wy) {
-            self.selected_info = Some("Nieznane miejsce — najpierw je odwiedź.".to_string());
-            return;
-        }
-        let config = self.config();
-        let player_chunk = self
-            .player_pos
-            .and_then(|(x, y)| world_to_chunk(x, y, &config));
-        if player_chunk != Some((region, chunk)) {
-            self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
-        }
-        self.set_walk_target(wx, wy, ctx);
-    }
-
-    /// Move on foot using in-game seconds; fog follows; camera follows chunk changes.
-    fn advance_movement(&mut self, game_secs: f64, ctx: &egui::Context) {
-        if game_secs <= 0.0 || !game_secs.is_finite() {
-            return;
-        }
-        let Some(pos) = self.player_pos else {
-            return;
-        };
-        let Some(target) = self.move_path.first().copied() else {
-            return;
-        };
-        let config = self.config();
-        self.ensure_terrain();
-        let dx = target.0 - pos.0;
-        let dy = target.1 - pos.1;
-        let along_road = {
-            let roads = self
-                .settlements
-                .as_ref()
-                .map(|m| m.roads.as_slice())
-                .unwrap_or(&[]);
-            traveling_along_road(roads, pos.0, pos.1, dx, dy, ROAD_TRAVEL_EPS)
-        };
-        let speed_wu = if along_road {
-            WALK_ROAD_WU_PER_GAME_HOUR
-        } else {
-            WALK_OFFROAD_WU_PER_GAME_HOUR
-        };
-        let speed = speed_wu / 3600.0;
-        let step = speed * game_secs as f32;
-        let dist = (dx * dx + dy * dy).sqrt();
-        let reached = dist <= step || dist < 1e-4;
-        let (nx, ny) = if reached {
-            target
-        } else {
-            let t = step / dist;
-            (pos.0 + dx * t, pos.1 + dy * t)
-        };
-        let next = self.clamp_to_world(nx, ny, &config);
-        let blocked = {
-            let roads = self
-                .settlements
-                .as_ref()
-                .map(|m| m.roads.as_slice())
-                .unwrap_or(&[]);
-            let sampler = self.terrain.as_ref().expect("terrain after ensure");
-            !point_traversable(sampler, roads, next.0, next.1)
-        };
-        if blocked {
-            self.move_path.clear();
-            self.selected_info =
-                Some("Przejście zablokowane (woda lub góry).".to_string());
-            self.rebuild_texture(ctx);
-            return;
-        }
-        let prev_chunk = world_to_chunk(pos.0, pos.1, &config);
-        self.player_pos = Some(next);
-        if reached {
-            self.move_path.remove(0);
-            if self.move_path.is_empty() {
-                self.selected_info =
-                    Some(format!("Na miejscu ({:.0}, {:.0})", target.0, target.1));
-            }
-        }
-        let config = self.config();
-        let explored = self.explore_player_chunk(&config);
-        let visited = self.update_visited_places();
-        if visited {
-            self.selected_info = Some("Odwiedzono osadę — dodano do znanych miejsc.".to_string());
-        } else if explored && !reached {
-            self.selected_info = Some("Odkryto nowy obszar.".to_string());
-        }
-        self.maybe_follow_player_chunk(prev_chunk, ctx);
-        self.rebuild_texture(ctx);
-    }
-
-    /// When the player crosses into another chunk while in Chunk LOD, follow them.
-    fn maybe_follow_player_chunk(
-        &mut self,
-        prev_chunk: Option<(RegionId, ChunkId)>,
-        ctx: &egui::Context,
-    ) {
-        let Some(pos) = self.player_pos else {
-            return;
-        };
-        let LodLevel::Chunk { .. } = self.lod else {
-            return;
-        };
-        let config = self.config();
-        let Some(cur) = world_to_chunk(pos.0, pos.1, &config) else {
-            return;
-        };
-        if prev_chunk == Some(cur) {
-            return;
-        }
-        let status = self.selected_info.clone();
-        let hit = self.selected_hit;
-        self.set_lod(
-            LodLevel::Chunk {
-                region: cur.0,
-                chunk: cur.1,
-            },
-            ctx,
-        );
-        self.selected_info = status;
-        self.selected_hit = hit;
-    }
-
-    fn poll_results(&mut self, ctx: &egui::Context) {
-        let mut got = None;
-        while let Ok(result) = self.rx.try_recv() {
-            if result.id == self.request_id {
-                got = Some(result);
-            }
-        }
-        if let Some(result) = got {
-            let view = LodView {
-                grid: result.grid,
-                habitat: result.habitat,
-                life: result.life,
-            };
-            self.lod_cache.store(result.lod, view.clone());
-            self.grid = Some(view.grid);
-            self.settlements = Some(result.settlements);
-            self.npcs = Some(result.npcs);
-            self.habitat = view.habitat;
-            self.life = view.life;
-            self.lod = result.lod;
-            self.seed = result.seed;
-            self.loading = false;
-            self.selected_info = None;
-            self.selected_hit = None;
-            self.rebuild_texture(ctx);
-        }
-    }
-
-    fn tick_simulation(&mut self, ctx: &egui::Context) {
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f64();
-        self.last_frame = now;
-        // Clock starts only once the map is ready (not while generating).
-        if !self.loading {
-            let game_secs = self.game.tick(dt);
-            self.advance_movement(game_secs, ctx);
-        }
-    }
-
-    fn ui_game_clock(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_game_clock(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             ui.add_space(8.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("Czas gry").strong());
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(self.game.time().format_label())
+                    RichText::new(self.session.game.time().format_label())
                         .monospace()
                         .size(16.0),
                 );
-                let status = if self.game.paused() {
+                let status = if self.session.game.paused() {
                     "Pauza".to_string()
                 } else {
-                    format!("×{:.0}", self.game.speed_mult())
+                    format!("×{:.0}", self.session.game.speed_mult())
                 };
                 ui.label(RichText::new(status).small());
             });
 
             ui.add_space(8.0);
-            let pause_label = if self.game.paused() { "Wznów" } else { "Pauza" };
+            let pause_label = if self.session.game.paused() { "Wznów" } else { "Pauza" };
             if ui
                 .add(egui::Button::new(pause_label).min_size(Vec2::new(ui.available_width(), 0.0)))
                 .clicked()
             {
-                self.game.toggle_pause();
+                self.session.game.toggle_pause();
             }
 
             ui.add_space(4.0);
@@ -1138,12 +349,12 @@ impl MapApp {
             ui.horizontal(|ui| {
                 for &mult in &SPEED_MULTIPLIERS {
                     let selected =
-                        !self.game.paused() && (self.game.speed_mult() - mult).abs() < f64::EPSILON;
+                        !self.session.game.paused() && (self.session.game.speed_mult() - mult).abs() < f64::EPSILON;
                     if ui
                         .selectable_label(selected, format!("×{:.0}", mult))
                         .clicked()
                     {
-                        self.game.set_speed(mult);
+                        self.session.game.set_speed(mult);
                     }
                 }
             });
@@ -1153,11 +364,11 @@ impl MapApp {
                 .add(egui::Button::new("+1 h").min_size(Vec2::new(ui.available_width(), 0.0)))
                 .clicked()
             {
-                self.game.skip_hours(1);
-                self.advance_movement(3600.0, ctx);
+                self.session.game.skip_hours(1);
+                self.session.advance_movement(3600.0);
             }
 
-            if let Some((wx, wy)) = self.pending_spawn {
+            if let Some((wx, wy)) = self.session.pending_spawn {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
@@ -1172,12 +383,12 @@ impl MapApp {
                 ui.add_space(4.0);
                 if ui
                     .add_enabled(
-                        !self.loading,
+                        !self.session.loading,
                         egui::Button::new("Spawn").min_size(Vec2::new(ui.available_width(), 0.0)),
                     )
                     .clicked()
                 {
-                    self.confirm_spawn(ctx);
+                    self.session.confirm_spawn();
                 }
                 if ui
                     .add(
@@ -1186,9 +397,9 @@ impl MapApp {
                     )
                     .clicked()
                 {
-                    self.cancel_pending_spawn(ctx);
+                    self.session.cancel_pending_spawn();
                 }
-            } else if let Some((wx, wy)) = self.player_pos {
+            } else if let Some((wx, wy)) = self.session.player_pos {
                 ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
@@ -1199,7 +410,7 @@ impl MapApp {
                             .monospace()
                             .small(),
                     );
-                    if !self.move_path.is_empty() {
+                    if !self.session.move_path.is_empty() {
                         ui.label(RichText::new("w drodze · piechota").small());
                     } else {
                         ui.label(RichText::new("piechota 5 km/h").small());
@@ -1212,12 +423,12 @@ impl MapApp {
                     )
                     .clicked()
                 {
-                    self.focus_player(ctx);
+                    self.session.focus_player();
                 }
-                self.ui_travel(ui, ctx);
-            } else if self.show_place_list() {
+                self.ui_travel(ui);
+            } else if self.session.show_place_list() {
                 ui.separator();
-                self.ui_place_list(ui, ctx);
+                self.ui_place_list(ui);
             }
 
             ui.add_space(12.0);
@@ -1227,12 +438,12 @@ impl MapApp {
                 ui.label(RichText::new("Wydajność").strong());
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(format!("FPS  {:.0}", self.perf.fps()))
+                    RichText::new(format!("FPS  {:.0}", self.session.perf.fps()))
                         .monospace()
                         .size(15.0),
                 );
                 ui.label(
-                    RichText::new(format!("CPU  {:.0}%", self.perf.cpu_percent()))
+                    RichText::new(format!("CPU  {:.0}%", self.session.perf.cpu_percent()))
                         .monospace()
                         .size(15.0),
                 );
@@ -1245,9 +456,9 @@ impl MapApp {
 
         ui.horizontal(|ui| {
             ui.label("Seed:");
-            ui.text_edit_singleline(&mut self.draft_seed);
+            ui.text_edit_singleline(&mut self.session.draft_seed);
         });
-        if let Some(err) = &self.seed_error {
+        if let Some(err) = &self.session.seed_error {
             ui.colored_label(Color32::from_rgb(0xcc, 0x44, 0x44), err);
         }
 
@@ -1255,32 +466,32 @@ impl MapApp {
             (
                 "Ukształtowanie",
                 "0 = płasko, 1 = pełne pasma (góry i depresje z seeda)",
-                &mut self.draft_params.orogeny_strength,
+                &mut self.session.draft_params.orogeny_strength,
             ),
             (
                 "Wilgotność",
                 "0 = jednolita, 1 = pełny zasięg biomów",
-                &mut self.draft_params.moisture_strength,
+                &mut self.session.draft_params.moisture_strength,
             ),
             (
                 "Detal micro",
                 "0 = gładko, 1 = pełny detal w zbliżeniu",
-                &mut self.draft_params.detail_strength,
+                &mut self.session.draft_params.detail_strength,
             ),
             (
                 "Falistość terenu",
                 "0 = równiny, 1 = pełne wzniesienia bazowe",
-                &mut self.draft_params.terrain_roughness,
+                &mut self.session.draft_params.terrain_roughness,
             ),
             (
                 "Powierzchnia lądu",
                 "0 = mniej lądu, 1 = więcej lądu",
-                &mut self.draft_params.land_size,
+                &mut self.session.draft_params.land_size,
             ),
             (
                 "Nieregularność brzegu",
                 "0 = gładkie wybrzeże, 1 = pełne zatoki i półwyspy",
-                &mut self.draft_params.coast_distortion,
+                &mut self.session.draft_params.coast_distortion,
             ),
         ] {
             ui.add(egui::Slider::new(value, 0.0..=1.0).text(label).step_by(0.1))
@@ -1289,33 +500,33 @@ impl MapApp {
 
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.loading, egui::Button::new("Losuj seed"))
+                .add_enabled(!self.session.loading, egui::Button::new("Losuj seed"))
                 .clicked()
             {
-                self.random_seed();
+                self.session.random_seed();
             }
-            let regen_label = if self.loading {
+            let regen_label = if self.session.loading {
                 "Generowanie…"
             } else {
                 "Regenerate"
             };
             if ui
-                .add_enabled(!self.loading, egui::Button::new(regen_label))
+                .add_enabled(!self.session.loading, egui::Button::new(regen_label))
                 .clicked()
             {
-                self.apply_seed_and_params();
+                self.session.apply_seed_and_params();
             }
-            let info_label = if self.show_seed_info {
+            let info_label = if self.session.show_seed_info {
                 "Ukryj opis"
             } else {
                 "Pokaż opis"
             };
             if ui.button(info_label).clicked() {
-                self.show_seed_info = !self.show_seed_info;
+                self.session.show_seed_info = !self.session.show_seed_info;
             }
         });
 
-        if self.show_seed_info {
+        if self.session.show_seed_info {
             ui.label("Seed to nieujemna liczba całkowita. Z niej generator buduje cały świat:");
             ui.label("• profil kształtu — seed % 6 (0 Radial … 5 Continents)");
             ui.label("• pasma górskie i depresje — losowe z seeda");
@@ -1323,7 +534,7 @@ impl MapApp {
             ui.label("Suwaki skalują intensywność (0–1). Ten sam seed + suwaki → ten sam świat.");
         }
 
-        if self.loading {
+        if self.session.loading {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("Generowanie mapy…");
@@ -1337,7 +548,7 @@ impl MapApp {
     }
 
     fn ui_ecology_legend(&self, ui: &mut egui::Ui) {
-        let mode = match self.lod {
+        let mode = match self.session.lod {
             LodLevel::Global => return,
             LodLevel::Region(_) => "region",
             LodLevel::Chunk { .. } => "chunk",
@@ -1373,7 +584,7 @@ impl MapApp {
 
     fn ui_settlement_legend(&self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Osady (mieszkańcy)").strong());
-        let counts = settlement_counts(self.settlements.as_ref());
+        let counts = settlement_counts(self.session.settlements.as_ref());
         for kind in SETTLEMENT_KIND_ORDER {
             let info = settlement_info(kind);
             let count = match kind {
@@ -1419,13 +630,13 @@ impl MapApp {
         }
     }
 
-    fn handle_map_click(&mut self, ctx: &egui::Context, pixel: (f32, f32), canvas: (f32, f32)) {
-        if self.loading || self.grid.is_none() {
+    fn handle_map_click(&mut self, pixel: (f32, f32), canvas: (f32, f32)) {
+        if self.session.loading || self.session.grid.is_none() {
             return;
         }
-        let config = self.config();
-        let bounds = self.lod.bounds(&config);
-        let settlements = self.view_settlements();
+        let config = self.session.config();
+        let bounds = self.session.lod.bounds(&config);
+        let settlements = self.session.view_settlements();
         let (px, py) = pixel;
         let (cw, ch) = canvas;
 
@@ -1436,25 +647,25 @@ impl MapApp {
             ch as usize,
             &settlements,
             &bounds,
-            self.settlement_style(),
+            self.session.settlement_style(),
         ) {
             let settlement = &settlements[hit.settlement_index];
-            if self.world_revealed(settlement.x, settlement.y, &config) {
+            if self.session.world_revealed(settlement.x, settlement.y, &config) {
                 let district = hit
                     .district_index
                     .and_then(|di| settlement.districts.get(di));
-                self.selected_info = Some(format_settlement_label(settlement, district));
-                self.selected_hit = Some(hit);
-                if matches!(self.lod, LodLevel::Chunk { .. }) {
-                    if self.player_spawn.is_none() {
-                        self.pending_spawn = Some((settlement.x, settlement.y));
-                        self.rebuild_texture(ctx);
+                self.session.selected_info = Some(format_settlement_label(settlement, district));
+                self.session.selected_hit = Some(hit);
+                if matches!(self.session.lod, LodLevel::Chunk { .. }) {
+                    if self.session.player_spawn.is_none() {
+                        self.session.pending_spawn = Some((settlement.x, settlement.y));
+                        self.session.texture_dirty = true;
                     } else {
-                        self.set_walk_target(settlement.x, settlement.y, ctx);
+                        self.session.set_walk_target(settlement.x, settlement.y);
                     }
                     return;
                 }
-                self.rebuild_texture(ctx);
+                self.session.texture_dirty = true;
                 return;
             }
             // Settlement under fog — ignore hit and continue.
@@ -1465,19 +676,19 @@ impl MapApp {
         let cx = ((px / cell_size).floor() as i32).clamp(0, chunks_per_side as i32 - 1) as u32;
         let cy = ((py / cell_size).floor() as i32).clamp(0, chunks_per_side as i32 - 1) as u32;
 
-        match self.lod {
+        match self.session.lod {
             LodLevel::Global => {
                 let region = RegionId { rx: cx, ry: cy };
-                self.set_lod(LodLevel::Region(region), ctx);
+                self.session.set_lod(LodLevel::Region(region));
             }
             LodLevel::Region(region) => {
                 let chunk = ChunkId { cx, cy };
-                self.set_lod(LodLevel::Chunk { region, chunk }, ctx);
+                self.session.set_lod(LodLevel::Chunk { region, chunk });
             }
             LodLevel::Chunk { .. } => {
                 let mut parts = Vec::new();
                 let mut land_cell: Option<(f32, f32)> = None;
-                if let Some(grid) = &self.grid {
+                if let Some(grid) = &self.session.grid {
                     if let Some((wx, wy, biome)) = cell_world_at_pixel(grid, &bounds, px, py, cw, ch)
                     {
                         parts.push(format!("Biom: {}", biome_label(biome)));
@@ -1486,72 +697,76 @@ impl MapApp {
                         }
                     }
                 }
-                if let Some(life) = &self.life {
+                if let Some(life) = &self.session.life {
                     if let Some(hint) =
                         life_area_summary(life, cw as usize, ch as usize, px, py, &bounds)
                     {
                         parts.push(hint);
                     }
                 }
-                self.selected_hit = None;
-                if self.player_spawn.is_none() {
-                    self.pending_spawn = land_cell;
-                    self.selected_info = Some(if parts.is_empty() {
-                        self.lod.idle_label(false)
+                self.session.selected_hit = None;
+                if self.session.player_spawn.is_none() {
+                    self.session.pending_spawn = land_cell;
+                    self.session.selected_info = Some(if parts.is_empty() {
+                        self.session.lod.idle_label(false)
                     } else {
                         parts.join(" · ")
                     });
-                    self.rebuild_texture(ctx);
+                    self.session.texture_dirty = true;
                 } else if let Some((wx, wy)) = land_cell {
-                    if self.world_revealed(wx, wy, &config) {
-                        self.set_walk_target(wx, wy, ctx);
+                    if self.session.world_revealed(wx, wy, &config) {
+                        self.session.set_walk_target(wx, wy);
                     } else {
-                        self.selected_info =
+                        self.session.selected_info =
                             Some("Poza zasięgiem widzenia.".to_string());
                     }
                 } else {
-                    self.selected_info = Some(if parts.is_empty() {
-                        self.lod.idle_label(true)
+                    self.session.selected_info = Some(if parts.is_empty() {
+                        self.session.lod.idle_label(true)
                     } else {
                         parts.join(" · ")
                     });
-                    self.rebuild_texture(ctx);
+                    self.session.texture_dirty = true;
                 }
             }
         }
     }
 
-    fn ui_map(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn ui_map(
+        &mut self,
+        ui: &mut egui::Ui,
+        map_texture: Option<egui::TextureId>,
+        size: egui::Vec2,
+    ) {
         ui.horizontal(|ui| {
-            if let Some(back) = self.lod.back_label() {
+            if let Some(back) = self.session.lod.back_label() {
                 if ui
-                    .add_enabled(!self.loading, egui::Button::new(back))
+                    .add_enabled(!self.session.loading, egui::Button::new(back))
                     .clicked()
                 {
-                    self.go_back(ctx);
+                    self.session.go_back();
                 }
             }
-            let status = self
+            let status = self.session
                 .selected_info
                 .clone()
-                .unwrap_or_else(|| self.lod.idle_label(self.player_spawn.is_some()));
+                .unwrap_or_else(|| self.session.lod.idle_label(self.session.player_spawn.is_some()));
             ui.label(status);
         });
 
-        let Some(texture) = self.texture.clone() else {
+        let Some(texture_id) = map_texture else {
             ui.centered_and_justified(|ui| ui.spinner());
             return;
         };
 
         let available = ui.available_size();
-        let size = texture.size_vec2();
         let scale = (available.x / size.x)
             .min(available.y / size.y)
             .max(0.1);
         let display = size * scale;
         let (rect, response) = ui.allocate_exact_size(
             display,
-            if matches!(self.lod, LodLevel::Chunk { .. }) {
+            if matches!(self.session.lod, LodLevel::Chunk { .. }) {
                 Sense::click()
             } else {
                 Sense::click()
@@ -1559,25 +774,25 @@ impl MapApp {
         );
 
         ui.painter().image(
-            texture.id(),
+            texture_id,
             rect,
             egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             Color32::WHITE,
         );
 
         {
-            let config = self.config();
-            let world_span = self.lod.bounds(&config).span;
+            let config = self.session.config();
+            let world_span = self.session.lod.bounds(&config).span;
             draw_map_scale(ui.painter(), rect, world_span);
         }
 
-        if self.loading {
+        if self.session.loading {
             ui.painter()
                 .rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 120));
             ui.painter().text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                match self.lod {
+                match self.session.lod {
                     LodLevel::Global => "Generowanie mapy świata…",
                     LodLevel::Region(_) => "Generowanie regionu…",
                     LodLevel::Chunk { .. } => "Generowanie obszaru…",
@@ -1587,99 +802,17 @@ impl MapApp {
             );
         }
 
-        if response.hovered() && !matches!(self.lod, LodLevel::Chunk { .. }) {
+        if response.hovered() && !matches!(self.session.lod, LodLevel::Chunk { .. }) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
-        if response.clicked() && !self.loading {
+        if response.clicked() && !self.session.loading {
             if let Some(pos) = response.interact_pointer_pos() {
                 let px = ((pos.x - rect.left()) / rect.width()) * size.x;
                 let py = ((pos.y - rect.top()) / rect.height()) * size.y;
-                self.handle_map_click(ctx, (px, py), (size.x, size.y));
+                self.handle_map_click((px, py), (size.x, size.y));
             }
         }
-    }
-}
-
-impl eframe::App for MapApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_results(ctx);
-        self.tick_simulation(ctx);
-        self.perf.tick();
-        // Keep repainting so the clock / FPS tick even when the map is idle.
-        ctx.request_repaint();
-
-        egui::SidePanel::left("controls")
-            .resizable(true)
-            .default_width(280.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.ui_controls(ui));
-            });
-
-        egui::SidePanel::right("game_clock")
-            .resizable(false)
-            .exact_width(if self.show_place_list() { 248.0 } else { 200.0 })
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.ui_game_clock(ui, ctx);
-                });
-            });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.ui_map(ui, ctx);
-        });
-    }
-}
-
-fn generate_job(req: GenRequest) -> GenResult {
-    let mut config = WorldConfig::default();
-    config.seed = req.seed;
-    req.params.apply_to(&mut config);
-
-    let sampler = TerrainSampler::new(config.clone());
-
-    let settlements = req
-        .settlements
-        .unwrap_or_else(|| generate_settlements_sampled(&sampler));
-    let npcs = req
-        .npcs
-        .unwrap_or_else(|| generate_npcs(req.seed, &settlements.settlements));
-
-    let (grid, habitat, life) = match req.lod {
-        LodLevel::Global => (generate_global_grid_sampled(&sampler), None, None),
-        LodLevel::Region(region) => (
-            generate_region_grid_sampled(&sampler, region),
-            Some(generate_region_ecology_sampled(&sampler, region)),
-            None,
-        ),
-        LodLevel::Chunk { region, chunk } => {
-            let x0 = region.rx as f32 * config.region_size as f32
-                + chunk.cx as f32 * config.chunk_size as f32;
-            let y0 = region.ry as f32 * config.region_size as f32
-                + chunk.cy as f32 * config.chunk_size as f32;
-            (
-                generate_view_grid_sampled(
-                    &sampler,
-                    region,
-                    x0,
-                    y0,
-                    config.chunk_size as f32,
-                ),
-                None,
-                Some(generate_chunk_ecology_sampled(&sampler, region, chunk)),
-            )
-        }
-    };
-
-    GenResult {
-        id: req.id,
-        seed: req.seed,
-        lod: req.lod,
-        grid,
-        settlements,
-        npcs,
-        habitat,
-        life,
     }
 }
 
@@ -1737,7 +870,6 @@ fn draw_map_scale(painter: &egui::Painter, map_rect: egui::Rect, world_span_km: 
     painter.line_segment([pos2(x0, y_bar), pos2(x1, y_bar)], stroke);
     painter.line_segment([pos2(x0, y_top), pos2(x0, y_bar)], stroke);
     painter.line_segment([pos2(x1, y_top), pos2(x1, y_bar)], stroke);
-    // Mid tick
     let xm = (x0 + x1) * 0.5;
     painter.line_segment([pos2(xm, y_bar - 4.0), pos2(xm, y_bar)], stroke);
 
@@ -1748,439 +880,6 @@ fn draw_map_scale(painter: &egui::Painter, map_rect: egui::Rect, world_span_km: 
         FontId::proportional(12.0),
         white,
     );
-}
-
-fn player_at(pos: (f32, f32), target: (f32, f32)) -> bool {
-    let dx = pos.0 - target.0;
-    let dy = pos.1 - target.1;
-    dx * dx + dy * dy <= AT_PLACE_EPS * AT_PLACE_EPS
-}
-
-fn world_to_chunk(wx: f32, wy: f32, config: &WorldConfig) -> Option<(RegionId, ChunkId)> {
-    if wx < 0.0 || wy < 0.0 {
-        return None;
-    }
-    let w = config.world_width as f32;
-    if wx >= w || wy >= w {
-        return None;
-    }
-    let rs = config.region_size;
-    let cs = config.chunk_size;
-    if rs == 0 || cs == 0 {
-        return None;
-    }
-    let ix = wx.floor() as u32;
-    let iy = wy.floor() as u32;
-    let rx = ix / rs;
-    let ry = iy / rs;
-    let cx = (ix % rs) / cs;
-    let cy = (iy % rs) / cs;
-    Some((RegionId { rx, ry }, ChunkId { cx, cy }))
-}
-
-struct TravelDest {
-    label: String,
-    x: f32,
-    y: f32,
-    region: RegionId,
-    chunk: ChunkId,
-}
-
-fn known_place_dests(
-    map: &Option<SettlementMap>,
-    known: &HashSet<(i32, i32)>,
-    config: &WorldConfig,
-) -> Vec<TravelDest> {
-    let Some(map) = map else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for s in &map.settlements {
-        let key = (s.x.floor() as i32, s.y.floor() as i32);
-        if !known.contains(&key) {
-            continue;
-        }
-        let Some((region, chunk)) = world_to_chunk(s.x, s.y, config) else {
-            continue;
-        };
-        let kind = settlement_info(s.kind).label;
-        out.push(TravelDest {
-            label: format!("{} · {}", s.name, kind),
-            x: s.x,
-            y: s.y,
-            region,
-            chunk,
-        });
-    }
-    out.sort_by(|a, b| a.label.cmp(&b.label));
-    out
-}
-
-/// Best road point ahead in a cardinal direction (prefers highways).
-/// Only points inside the player's vision count as known roads.
-fn road_target_in_direction(
-    pos: (f32, f32),
-    dir: Cardinal,
-    roads: &[Road],
-) -> Option<(f32, f32)> {
-    let (dx, dy) = dir.delta();
-    let mut best: Option<(f32, f32, f32)> = None; // score (lower better), x, y
-    for road in roads {
-        let kind_penalty = match road.kind {
-            RoadKind::Highway => 0.0,
-            RoadKind::Secondary => 40.0,
-            RoadKind::Local => 90.0,
-        };
-        for p in &road.points {
-            let vx = p.x - pos.0;
-            let vy = p.y - pos.1;
-            let dist = (vx * vx + vy * vy).sqrt();
-            if dist < 0.6 || dist > VISION_RADIUS {
-                continue;
-            }
-            let along = vx * dx + vy * dy;
-            if along < 0.5 {
-                continue;
-            }
-            let lateral = (vx * dy - vy * dx).abs();
-            if lateral > along * 0.9 {
-                continue;
-            }
-            let score = dist + lateral * 1.5 + kind_penalty;
-            if best.map(|(s, _, _)| score < s).unwrap_or(true) {
-                best = Some((score, p.x, p.y));
-            }
-        }
-    }
-    best.map(|(_, x, y)| (x, y))
-}
-
-fn terrain_walkable(sampler: &TerrainSampler, x: f32, y: f32) -> bool {
-    let cell = sampler.cell_at(
-        x as f64,
-        y as f64,
-        crate::world::config::LodLevel::Macro,
-    );
-    if is_water_biome(cell.elevation) || cell.elevation >= HIGH_M {
-        return false;
-    }
-    !matches!(
-        cell.biome,
-        TileType::Water | TileType::DeepWater | TileType::Mountain | TileType::Snow
-    )
-}
-
-fn dist2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let dx = ax - bx;
-    let dy = ay - by;
-    dx * dx + dy * dy
-}
-
-fn dist_point_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let abx = bx - ax;
-    let aby = by - ay;
-    let len2 = abx * abx + aby * aby;
-    if len2 < 1e-8 {
-        return dist2(px, py, ax, ay).sqrt();
-    }
-    let t = ((px - ax) * abx + (py - ay) * aby) / len2;
-    let t = t.clamp(0.0, 1.0);
-    let qx = ax + abx * t;
-    let qy = ay + aby * t;
-    dist2(px, py, qx, qy).sqrt()
-}
-
-fn near_road(roads: &[Road], x: f32, y: f32, eps: f32) -> bool {
-    let eps2 = eps * eps;
-    for road in roads {
-        for p in &road.points {
-            if dist2(x, y, p.x, p.y) <= eps2 {
-                return true;
-            }
-        }
-        for i in 0..road.points.len().saturating_sub(1) {
-            let a = &road.points[i];
-            let b = &road.points[i + 1];
-            if dist_point_to_segment(x, y, a.x, a.y, b.x, b.y) <= eps {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// True only when near a road segment and moving roughly along it (not across it).
-fn traveling_along_road(
-    roads: &[Road],
-    x: f32,
-    y: f32,
-    move_dx: f32,
-    move_dy: f32,
-    eps: f32,
-) -> bool {
-    let move_len = (move_dx * move_dx + move_dy * move_dy).sqrt();
-    if move_len < 1e-4 {
-        return false;
-    }
-    let mdx = move_dx / move_len;
-    let mdy = move_dy / move_len;
-    for road in roads {
-        for i in 0..road.points.len().saturating_sub(1) {
-            let a = &road.points[i];
-            let b = &road.points[i + 1];
-            if dist_point_to_segment(x, y, a.x, a.y, b.x, b.y) > eps {
-                continue;
-            }
-            let sdx = b.x - a.x;
-            let sdy = b.y - a.y;
-            let slen = (sdx * sdx + sdy * sdy).sqrt();
-            if slen < 1e-4 {
-                continue;
-            }
-            let alignment = ((sdx / slen) * mdx + (sdy / slen) * mdy).abs();
-            if alignment >= ROAD_ALIGN_MIN {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Walkable open terrain, or on an existing road ribbon (bridges included).
-fn point_traversable(sampler: &TerrainSampler, roads: &[Road], x: f32, y: f32) -> bool {
-    terrain_walkable(sampler, x, y) || near_road(roads, x, y, ROAD_TRAVEL_EPS)
-}
-
-/// Furthest point on from→to that stays traversable; `true` if the full segment is clear.
-fn farthest_traversable(
-    sampler: &TerrainSampler,
-    roads: &[Road],
-    from: (f32, f32),
-    to: (f32, f32),
-) -> ((f32, f32), bool) {
-    let dx = to.0 - from.0;
-    let dy = to.1 - from.1;
-    let dist = (dx * dx + dy * dy).sqrt();
-    if dist < 1e-4 {
-        return (from, point_traversable(sampler, roads, from.0, from.1));
-    }
-    let n = ((dist / 0.5).ceil() as usize).clamp(2, 200);
-    let mut last = from;
-    for i in 1..=n {
-        let t = i as f32 / n as f32;
-        let x = from.0 + dx * t;
-        let y = from.1 + dy * t;
-        if !point_traversable(sampler, roads, x, y) {
-            return (last, false);
-        }
-        last = (x, y);
-    }
-    (to, true)
-}
-
-/// Clamp a waypoint chain so each leg stays traversable; stop at the first block.
-fn prepare_walk_path(
-    sampler: &TerrainSampler,
-    roads: &[Road],
-    from: (f32, f32),
-    waypoints: &[(f32, f32)],
-) -> Vec<(f32, f32)> {
-    let mut out = Vec::new();
-    let mut cur = from;
-    for &wp in waypoints {
-        if player_at(cur, wp) {
-            continue;
-        }
-        let (dest, clear) = farthest_traversable(sampler, roads, cur, wp);
-        if player_at(cur, dest) {
-            break;
-        }
-        out.push(dest);
-        if !clear {
-            break;
-        }
-        cur = dest;
-    }
-    out
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-struct RouteNode {
-    cost: u32,
-    idx: usize,
-}
-
-impl Ord for RouteNode {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .cost
-            .cmp(&self.cost)
-            .then_with(|| self.idx.cmp(&other.idx))
-    }
-}
-
-impl PartialOrd for RouteNode {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-fn nearest_road_node(nodes: &[(f32, f32)], p: (f32, f32)) -> Option<(usize, f32)> {
-    let mut best: Option<(usize, f32)> = None;
-    for (i, &(x, y)) in nodes.iter().enumerate() {
-        let d = dist2(p.0, p.1, x, y).sqrt();
-        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
-            best = Some((i, d));
-        }
-    }
-    best
-}
-
-/// Shortest path along road polylines from near `from` to near `to`.
-/// Returns waypoints on the network, ending at `to` when reachable.
-fn road_route(from: (f32, f32), to: (f32, f32), roads: &[Road]) -> Option<Vec<(f32, f32)>> {
-    let mut nodes: Vec<(f32, f32)> = Vec::new();
-    for road in roads {
-        for p in &road.points {
-            nodes.push((p.x, p.y));
-        }
-    }
-    if nodes.len() < 2 {
-        return None;
-    }
-
-    let mut edges: Vec<Vec<(usize, u32)>> = vec![Vec::new(); nodes.len()];
-    let mut offset = 0usize;
-    for road in roads {
-        let n = road.points.len();
-        for i in 0..n.saturating_sub(1) {
-            let a = offset + i;
-            let b = offset + i + 1;
-            let d = (dist2(nodes[a].0, nodes[a].1, nodes[b].0, nodes[b].1).sqrt() * 100.0)
-                .round() as u32;
-            let d = d.max(1);
-            edges[a].push((b, d));
-            edges[b].push((a, d));
-        }
-        offset += n;
-    }
-    for i in 0..nodes.len() {
-        for j in (i + 1)..nodes.len() {
-            let d = dist2(nodes[i].0, nodes[i].1, nodes[j].0, nodes[j].1).sqrt();
-            if d > 0.05 && d <= ROAD_NODE_LINK_EPS {
-                let c = (d * 100.0).round() as u32;
-                let c = c.max(1);
-                edges[i].push((j, c));
-                edges[j].push((i, c));
-            }
-        }
-    }
-
-    let (start, start_d) = nearest_road_node(&nodes, from)?;
-    let (goal, goal_d) = nearest_road_node(&nodes, to)?;
-    if start_d > ROAD_SNAP_EPS || goal_d > ROAD_SNAP_EPS {
-        return None;
-    }
-
-    let n = nodes.len();
-    let mut dist = vec![u32::MAX; n];
-    let mut prev = vec![None; n];
-    let mut heap = BinaryHeap::new();
-    dist[start] = 0;
-    heap.push(RouteNode {
-        cost: 0,
-        idx: start,
-    });
-    while let Some(RouteNode { cost, idx }) = heap.pop() {
-        if cost != dist[idx] {
-            continue;
-        }
-        if idx == goal {
-            break;
-        }
-        for &(next, w) in &edges[idx] {
-            let next_cost = cost.saturating_add(w);
-            if next_cost < dist[next] {
-                dist[next] = next_cost;
-                prev[next] = Some(idx);
-                heap.push(RouteNode {
-                    cost: next_cost,
-                    idx: next,
-                });
-            }
-        }
-    }
-    if dist[goal] == u32::MAX {
-        return None;
-    }
-
-    let mut chain = Vec::new();
-    let mut cur = Some(goal);
-    while let Some(i) = cur {
-        chain.push(nodes[i]);
-        if i == start {
-            break;
-        }
-        cur = prev[i];
-    }
-    chain.reverse();
-    if chain.is_empty() {
-        return None;
-    }
-
-    // Skip the entry node when the player is already there.
-    if player_at(from, chain[0]) {
-        chain.remove(0);
-    }
-    if chain
-        .last()
-        .map(|p| !player_at(*p, to))
-        .unwrap_or(true)
-    {
-        chain.push(to);
-    }
-    if chain.is_empty() {
-        None
-    } else {
-        Some(chain)
-    }
-}
-
-fn biome_label(biome: TileType) -> &'static str {
-    for (tile, info) in BIOMES {
-        if *tile == biome {
-            return info.label;
-        }
-    }
-    "?"
-}
-
-fn is_land_biome(biome: TileType) -> bool {
-    !matches!(biome, TileType::Water | TileType::DeepWater)
-}
-
-/// Grid cell under the click → world center of that cell + biome.
-fn cell_world_at_pixel(
-    grid: &TerrainGrid,
-    bounds: &WorldBounds,
-    px: f32,
-    py: f32,
-    canvas_width: f32,
-    canvas_height: f32,
-) -> Option<(f32, f32, TileType)> {
-    if grid.width == 0 || grid.height == 0 || grid.cells.is_empty() {
-        return None;
-    }
-    let gx = ((px / canvas_width) * grid.width as f32)
-        .floor()
-        .clamp(0.0, (grid.width - 1) as f32) as usize;
-    let gy = ((py / canvas_height) * grid.height as f32)
-        .floor()
-        .clamp(0.0, (grid.height - 1) as f32) as usize;
-    let biome = grid.cells.get(gy * grid.width as usize + gx)?.biome;
-    let wx = bounds.x0 + ((gx as f32 + 0.5) / grid.width as f32) * bounds.span;
-    let wy = bounds.y0 + ((gy as f32 + 0.5) / grid.height as f32) * bounds.span;
-    Some((wx, wy, biome))
 }
 
 fn swatch(ui: &mut egui::Ui, rgb: [u8; 3]) {
@@ -2210,25 +909,4 @@ fn settlement_counts(map: Option<&SettlementMap>) -> [usize; 4] {
         }
     }
     counts
-}
-
-fn format_pop(n: u32) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(' ');
-        }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
-}
-
-fn rand_u32() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1);
-    ((t ^ (t >> 33)).wrapping_mul(0xff51afd7ed558ccd) >> 32) as u32
 }

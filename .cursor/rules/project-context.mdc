@@ -4,14 +4,14 @@ Procedural world-map preview. Desktop app.
 
 ## Tech stack
 
-- **Desktop / UI**: Rust, eframe + egui
+- **Desktop / UI**: Rust, Bevy + egui (`bevy_egui`)
 - **World**: Rust (`noise`, `rayon`, `serde`)
 
 ## Architecture
 
 - Rust is the only source of truth for terrain — UI only renders
-- `app.rs` calls `world::grid` / settlement / ecology on a **worker thread**
-- Texture compose: terrain + habitat wash + roads + settlements → egui texture (`render.rs`)
+- `session.rs` / `app.rs` call `world::grid` / settlement / ecology on a **worker thread**
+- Texture compose: terrain + habitat wash + roads + settlements → Bevy `Image` (`render.rs`) shown via egui
 - Three LOD levels: global → region → chunk
 - Seed: `u64`. Params: `TerrainGenParams`
 
@@ -20,15 +20,16 @@ Procedural world-map preview. Desktop app.
 ```
 src-tauri/                 # Rust app crate
   src/
-    main.rs                # eframe entry
+    main.rs                # Bevy entry + map texture sync
     lib.rs
+    session.rs             # map/sim state (no egui)
     app.rs                 # egui UI + LOD + legends
     colors.rs              # biome colors
-    render.rs              # compose map ColorImage
+    render.rs              # compose map RGBA / ColorImage
     settlements_draw.rs    # settlements + roads (RGBA)
     ecology_draw.rs        # habitat wash + life summaries
     world/                 # sampler, grid, biome, river, settlement, ecology, …
-docs/                      # Polish notes (seed, plans)
+docs/                      # Polish notes (seed, plans, migration)
 AGENTS.md
 ```
 

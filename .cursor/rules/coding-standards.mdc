@@ -7,7 +7,7 @@
 - Do not "improve" neighboring code, comments, or formatting
 - Match the existing style even if you would do it differently
 - If the task is ambiguous — ask before coding
-- Do not add crates unless required for the task; prefer `noise`, `rayon`, `serde`, `eframe`/`egui`
+- Do not add crates unless required for the task; prefer `noise`, `rayon`, `serde`, `bevy`/`bevy_egui`/`egui`
 
 ## Simplicity
 

@@ -261,7 +261,8 @@ fn stroke_triangle(
     }
 }
 
-pub fn compose_map_image(input: ComposeInput<'_>) -> ColorImage {
+/// Compose map layers to unmultiplied RGBA (width × height × 4).
+pub fn compose_map_rgba(input: ComposeInput<'_>) -> (usize, usize, Vec<u8>) {
     let w = input.grid.width as usize;
     let h = input.grid.height as usize;
     let mut rgba = terrain_grid_to_rgba(input.grid);
@@ -316,6 +317,11 @@ pub fn compose_map_image(input: ComposeInput<'_>) -> ColorImage {
         }
     }
 
+    (w, h, rgba)
+}
+
+pub fn compose_map_image(input: ComposeInput<'_>) -> ColorImage {
+    let (w, h, rgba) = compose_map_rgba(input);
     ColorImage::from_rgba_unmultiplied([w, h], &rgba)
 }
 

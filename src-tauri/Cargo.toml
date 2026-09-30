@@ -14,8 +14,9 @@ name = "map_tests"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.31", default-features = true }
-egui = "0.31"
+bevy = { version = "0.19", default-features = true }
+bevy_egui = "0.42"
+egui = "0.36"
 noise = "0.9"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
