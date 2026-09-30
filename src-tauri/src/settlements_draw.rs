@@ -1717,21 +1717,15 @@ fn road_layer_width(kind: RoadKind, surface: RoadSurface, detail: RoadDetail) ->
     (scale * base * surface_mul).max(0.7)
 }
 
-fn paint_bridge_marks(
+/// One deck + tie per unique shore→shore span (shared bridges must not stack marks).
+fn paint_bridge_marks_dedup(
     pixels: &mut [u8],
     width: usize,
     height: usize,
-    road: &Road,
+    roads: &[&Road],
     bounds: &WorldBounds,
     detail: RoadDetail,
 ) {
-    let has_bridge = road
-        .points
-        .iter()
-        .any(|p| p.crossing == Some(RoadCrossing::Bridge));
-    if !has_bridge {
-        return;
-    }
     let across_world = match detail {
         RoadDetail::Close => 3.2,
         RoadDetail::Region => 2.6,
@@ -1740,47 +1734,67 @@ fn paint_bridge_marks(
     let canvas_w = width as f32;
     let canvas_h = height as f32;
     let across = (across_world * canvas_w) / bounds.span;
-    for i in 0..road.points.len() {
-        let p = &road.points[i];
-        if p.crossing != Some(RoadCrossing::Bridge) {
-            continue;
+    let to_c = |x: f32, y: f32| {
+        (
+            ((x - bounds.x0) / bounds.span) * canvas_w,
+            ((y - bounds.y0) / bounds.span) * canvas_h,
+        )
+    };
+    const MID_DEDUP_R2: f32 = 10.0 * 10.0;
+    let mut drawn_mids: Vec<(f32, f32)> = Vec::new();
+
+    for road in roads {
+        for i in 0..road.points.len() {
+            let p = &road.points[i];
+            if p.crossing != Some(RoadCrossing::Bridge) {
+                continue;
+            }
+            if i == 0 || i + 1 >= road.points.len() {
+                continue;
+            }
+            let prev = &road.points[i - 1];
+            let next = &road.points[i + 1];
+            if drawn_mids
+                .iter()
+                .any(|&(mx, my)| {
+                    let dx = mx - p.x;
+                    let dy = my - p.y;
+                    dx * dx + dy * dy <= MID_DEDUP_R2
+                })
+            {
+                continue;
+            }
+            drawn_mids.push((p.x, p.y));
+
+            let dx = next.x - prev.x;
+            let dy = next.y - prev.y;
+            let dist = (dx * dx + dy * dy).sqrt().max(1.0);
+            let nx = -dy / dist;
+            let ny = dx / dist;
+            let a = to_c(prev.x, prev.y);
+            let b = to_c(next.x, next.y);
+            let deck = match detail {
+                RoadDetail::Close => Rgba::rgba(96, 72, 40, (0.95 * 255.0) as u8),
+                _ => Rgba::rgba(86, 64, 36, (0.88 * 255.0) as u8),
+            };
+            let deck_w = if detail == RoadDetail::Close { 3.2 } else { 2.4 };
+            stroke_polyline(pixels, width, height, &[a, b], deck_w, deck);
+            let sx = ((p.x - bounds.x0) / bounds.span) * canvas_w;
+            let sy = ((p.y - bounds.y0) / bounds.span) * canvas_h;
+            let tie = match detail {
+                RoadDetail::Close => Rgba::rgba(42, 28, 14, (0.95 * 255.0) as u8),
+                _ => Rgba::rgba(40, 28, 14, (0.85 * 255.0) as u8),
+            };
+            let tie_w = if detail == RoadDetail::Close { 2.0 } else { 1.5 };
+            stroke_polyline(
+                pixels,
+                width,
+                height,
+                &[(sx - nx * across, sy - ny * across), (sx + nx * across, sy + ny * across)],
+                tie_w,
+                tie,
+            );
         }
-        let prev = &road.points[i.saturating_sub(1).max(0)];
-        let next = &road.points[(i + 1).min(road.points.len() - 1)];
-        let dx = next.x - prev.x;
-        let dy = next.y - prev.y;
-        let dist = (dx * dx + dy * dy).sqrt().max(1.0);
-        let nx = -dy / dist;
-        let ny = dx / dist;
-        let to_c = |x: f32, y: f32| {
-            (
-                ((x - bounds.x0) / bounds.span) * canvas_w,
-                ((y - bounds.y0) / bounds.span) * canvas_h,
-            )
-        };
-        let a = to_c(prev.x, prev.y);
-        let b = to_c(next.x, next.y);
-        let deck = match detail {
-            RoadDetail::Close => Rgba::rgba(96, 72, 40, (0.95 * 255.0) as u8),
-            _ => Rgba::rgba(86, 64, 36, (0.88 * 255.0) as u8),
-        };
-        let deck_w = if detail == RoadDetail::Close { 3.2 } else { 2.4 };
-        stroke_polyline(pixels, width, height, &[a, b], deck_w, deck);
-        let sx = ((p.x - bounds.x0) / bounds.span) * canvas_w;
-        let sy = ((p.y - bounds.y0) / bounds.span) * canvas_h;
-        let tie = match detail {
-            RoadDetail::Close => Rgba::rgba(42, 28, 14, (0.95 * 255.0) as u8),
-            _ => Rgba::rgba(40, 28, 14, (0.85 * 255.0) as u8),
-        };
-        let tie_w = if detail == RoadDetail::Close { 2.0 } else { 1.5 };
-        stroke_polyline(
-            pixels,
-            width,
-            height,
-            &[(sx - nx * across, sy - ny * across), (sx + nx * across, sy + ny * across)],
-            tie_w,
-            tie,
-        );
     }
 }
 
@@ -1791,9 +1805,8 @@ fn punch_road_water(
     ox: f32,
     oy: f32,
     grid: &TerrainGrid,
-    bridge_canvas_pts: &[(f32, f32)],
 ) {
-    let keep_r2 = 7.0f32 * 7.0;
+    // Drop every road pixel on water. Bridge decks are painted afterwards via marks.
     for y in 0..oh {
         for x in 0..ow {
             let i = (y * ow + x) * 4;
@@ -1802,17 +1815,7 @@ fn punch_road_water(
             }
             let biome = biome_at_canvas(grid, ox + x as f32, oy + y as f32);
             let Some(b) = biome else { continue };
-            if !is_water_biome(b) {
-                continue;
-            }
-            let cx = ox + x as f32;
-            let cy = oy + y as f32;
-            let near_bridge = bridge_canvas_pts.iter().any(|&(bx, by)| {
-                let dx = cx - bx;
-                let dy = cy - by;
-                dx * dx + dy * dy <= keep_r2
-            });
-            if !near_bridge {
+            if is_water_biome(b) {
                 clear_alpha(overlay, ow, x, y);
             }
         }
@@ -1829,48 +1832,62 @@ fn paint_road_stroke_onto(
 ) {
     let canvas_w = width as f32;
     let canvas_h = height as f32;
-    let pts = road_to_canvas(&road.points, bounds, canvas_w, canvas_h);
     let lw = road_layer_width(road.kind, road.surface, detail);
-    match road.surface {
-        RoadSurface::Paved => {
-            let outline_w = lw
-                + if detail == RoadDetail::Close {
-                    1.6
+    // Paint only dry subsequences — never stroke through bridge mids / water.
+    let mut start = 0usize;
+    let flush = |pixels: &mut [u8], start: usize, end: usize| {
+        if end.saturating_sub(start) < 2 {
+            return;
+        }
+        let pts = road_to_canvas(&road.points[start..end], bounds, canvas_w, canvas_h);
+        match road.surface {
+            RoadSurface::Paved => {
+                let outline_w = lw
+                    + if detail == RoadDetail::Close {
+                        1.6
+                    } else {
+                        0.9
+                    };
+                stroke_polyline(
+                    pixels,
+                    width,
+                    height,
+                    &pts,
+                    outline_w,
+                    Rgba::rgba(42, 28, 14, (0.72 * 255.0) as u8),
+                );
+                let fill = if detail == RoadDetail::Close {
+                    Rgba::rgba(214, 176, 110, (0.95 * 255.0) as u8)
                 } else {
-                    0.9
+                    Rgba::rgba(196, 163, 106, (0.88 * 255.0) as u8)
                 };
-            stroke_polyline(
-                pixels,
-                width,
-                height,
-                &pts,
-                outline_w,
-                Rgba::rgba(42, 28, 14, (0.72 * 255.0) as u8),
-            );
-            let fill = if detail == RoadDetail::Close {
-                Rgba::rgba(214, 176, 110, (0.95 * 255.0) as u8)
-            } else {
-                Rgba::rgba(196, 163, 106, (0.88 * 255.0) as u8)
-            };
-            stroke_polyline(pixels, width, height, &pts, lw, fill);
+                stroke_polyline(pixels, width, height, &pts, lw, fill);
+            }
+            RoadSurface::Packed => {
+                let col = if detail == RoadDetail::Close {
+                    Rgba::rgba(122, 90, 54, (0.88 * 255.0) as u8)
+                } else {
+                    Rgba::rgba(110, 82, 50, (0.78 * 255.0) as u8)
+                };
+                stroke_polyline(pixels, width, height, &pts, lw, col);
+            }
+            RoadSurface::Dirt => {
+                let col = if detail == RoadDetail::Close {
+                    Rgba::rgba(86, 68, 46, (0.8 * 255.0) as u8)
+                } else {
+                    Rgba::rgba(86, 68, 46, (0.62 * 255.0) as u8)
+                };
+                stroke_polyline(pixels, width, height, &pts, lw, col);
+            }
         }
-        RoadSurface::Packed => {
-            let col = if detail == RoadDetail::Close {
-                Rgba::rgba(122, 90, 54, (0.88 * 255.0) as u8)
-            } else {
-                Rgba::rgba(110, 82, 50, (0.78 * 255.0) as u8)
-            };
-            stroke_polyline(pixels, width, height, &pts, lw, col);
-        }
-        RoadSurface::Dirt => {
-            let col = if detail == RoadDetail::Close {
-                Rgba::rgba(86, 68, 46, (0.8 * 255.0) as u8)
-            } else {
-                Rgba::rgba(86, 68, 46, (0.62 * 255.0) as u8)
-            };
-            stroke_polyline(pixels, width, height, &pts, lw, col);
+    };
+    for i in 0..road.points.len() {
+        if road.points[i].crossing == Some(RoadCrossing::Bridge) {
+            flush(pixels, start, i);
+            start = i + 1;
         }
     }
+    flush(pixels, start, road.points.len());
 }
 
 // ── Public draw / hit API ──────────────────────────────────────────────────
@@ -1912,41 +1929,15 @@ pub fn draw_roads(
 
     if grid.is_none() {
         paint_all(pixels);
-        for road in &visible {
-            paint_bridge_marks(pixels, width, height, road, bounds, detail);
-        }
+        paint_bridge_marks_dedup(pixels, width, height, &visible, bounds, detail);
         return;
     }
 
     let mut overlay = vec![0u8; width * height * 4];
     paint_all(&mut overlay);
-    let canvas_w = width as f32;
-    let canvas_h = height as f32;
-    let mut bridge_pts = Vec::new();
-    for road in &visible {
-        for p in &road.points {
-            if p.crossing != Some(RoadCrossing::Bridge) {
-                continue;
-            }
-            bridge_pts.push((
-                ((p.x - bounds.x0) / bounds.span) * canvas_w,
-                ((p.y - bounds.y0) / bounds.span) * canvas_h,
-            ));
-        }
-    }
-    punch_road_water(
-        &mut overlay,
-        width,
-        height,
-        0.0,
-        0.0,
-        grid.unwrap(),
-        &bridge_pts,
-    );
+    punch_road_water(&mut overlay, width, height, 0.0, 0.0, grid.unwrap());
     blit_overlay(pixels, width, height, &overlay, width, height, 0, 0);
-    for road in &visible {
-        paint_bridge_marks(pixels, width, height, road, bounds, detail);
-    }
+    paint_bridge_marks_dedup(pixels, width, height, &visible, bounds, detail);
 }
 
 pub fn draw_settlements(

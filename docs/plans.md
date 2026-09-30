@@ -30,6 +30,25 @@ Teren z seeda pozostaje **deterministyczny i niemutowalny**. Wszystko „żywe�
 
 **Największy gotowy asset:** graf **osady + drogi + rzeki + biomy** + LOD obszarów. To naturalny szkielet pod A–E poniżej.
 
+## Etapy wydania
+
+Proponowany podział na etapy gry znajduje się w osobnych dokumentach:
+
+- [Alpha — pierwsza grywalna pętla](./alpha.md)
+- [Beta — świat reagujący na gracza](./beta.md)
+- [Demo — dopracowany wycinek gry](./demo.md)
+- [Full-version — pełna gra](./full-version.md)
+- [Postać i zależności systemów świata](./plan-zaleznosci-swiata.md)
+- [Biomy — zależności i plan wdrożenia](./biomy.md)
+- [Drogi — zależności i plan wdrożenia](./drogi.md)
+- [Miasta i osady — zależności i plan wdrożenia](./miasta-osady.md)
+- [Państwa i frakcje — zależności i plan wdrożenia](./panstwa.md)
+- [NPC — zależności i plan wdrożenia](./npc.md)
+- [Dzielnice — aktualna lista i zależności](./dzielnice.md)
+- [Budynki — lista według dzielnic i plan wdrożenia](./budynki.md)
+
+Demo jest ograniczonym wydaniem wybranej zawartości, a nie etapem wymagającym ukończenia całej Bety. Multiplayer i era przemysłowa pozostają opcjonalne.
+
 **Sugerowana kolejność (po analizie A–E):**
 
 ```
