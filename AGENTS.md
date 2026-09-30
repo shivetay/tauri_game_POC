@@ -27,6 +27,7 @@ Workflows: `.cursor/skills/`.
 5. **No voluntary extras.** A change may only do what the user asked. Do not redesign markers/icons, restyle UI, rename labels, tweak colors, swap shapes, or “improve” anything that was not requested — even if it seems related or nicer. If something looks wrong but was not named, ask first.
 6. Clean up your own mess: no unused imports/vars/types/files, no commented-out code, no debug logs.
 7. Verify: `cargo test --lib` in `src-tauri`, seed determinism, run the binary (`cargo run` in `src-tauri`).
+8. After each task, update [`docs/aktualny_stan_prac.md`](docs/aktualny_stan_prac.md) if the implemented project state changed. If the release roadmap changes, update the relevant stage file in `docs/` and its index in [`docs/plans.md`](docs/plans.md).
 
 Skill: `.cursor/skills/change-flow/SKILL.md`.
 
