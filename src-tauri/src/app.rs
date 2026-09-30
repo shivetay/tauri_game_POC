@@ -30,6 +30,7 @@ use crate::world::grid::{
     generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
 };
 use crate::world::sampler::TerrainSampler;
+use crate::world::npc::{generate as generate_npcs, NpcMap};
 use crate::world::settlement::{
     generate_sampled as generate_settlements_sampled, Road, RoadKind, Settlement, SettlementKind,
     SettlementMap,
@@ -156,6 +157,8 @@ struct GenRequest {
     lod: LodLevel,
     /// Reuse settlements when only LOD changed (same seed/params).
     settlements: Option<SettlementMap>,
+    /// Reuse NPCs with settlements (same seed/params).
+    npcs: Option<NpcMap>,
 }
 
 struct GenResult {
@@ -164,6 +167,7 @@ struct GenResult {
     lod: LodLevel,
     grid: TerrainGrid,
     settlements: SettlementMap,
+    npcs: NpcMap,
     habitat: Option<RegionEcologyMap>,
     life: Option<ChunkEcologyMap>,
 }
@@ -234,6 +238,7 @@ pub struct MapApp {
     lod: LodLevel,
     grid: Option<TerrainGrid>,
     settlements: Option<SettlementMap>,
+    npcs: Option<NpcMap>,
     habitat: Option<RegionEcologyMap>,
     life: Option<ChunkEcologyMap>,
     texture: Option<TextureHandle>,
@@ -290,6 +295,7 @@ impl MapApp {
             lod: LodLevel::Global,
             grid: None,
             settlements: None,
+            npcs: None,
             habitat: None,
             life: None,
             texture: None,
@@ -369,10 +375,10 @@ impl MapApp {
         self.loading = true;
         self.selected_info = None;
         self.selected_hit = None;
-        let settlements = if refresh_settlements {
-            None
+        let (settlements, npcs) = if refresh_settlements {
+            (None, None)
         } else {
-            self.settlements.clone()
+            (self.settlements.clone(), self.npcs.clone())
         };
         let _ = self.tx.send(GenRequest {
             id: self.request_id,
@@ -380,6 +386,7 @@ impl MapApp {
             params: self.params,
             lod: self.lod,
             settlements,
+            npcs,
         });
     }
 
@@ -693,24 +700,88 @@ impl MapApp {
                     ui.label(RichText::new("Mury obronne").small());
                 }
                 if open {
-                    if let Some(settlement) = self
+                    let district_rows: Option<Vec<(String, String)>> = self
                         .settlements
                         .as_ref()
                         .and_then(|m| m.settlements.get(row.index))
-                    {
+                        .map(|settlement| {
+                            settlement
+                                .districts
+                                .iter()
+                                .map(|d| {
+                                    (
+                                        format!("{} — {}", district_info(d.kind).label, d.name),
+                                        d.name.clone(),
+                                    )
+                                })
+                                .collect()
+                        });
+                    if let Some(district_rows) = district_rows {
                         ui.label(RichText::new("Dzielnice").small().strong());
-                        if settlement.districts.is_empty() {
+                        if district_rows.is_empty() {
                             ui.label(RichText::new("Brak podziału na dzielnice.").small());
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("NPC").small().strong());
+                            let roster = self
+                                .npcs
+                                .as_ref()
+                                .map(|m| m.in_settlement(row.index))
+                                .unwrap_or(&[]);
+                            if roster.is_empty() {
+                                ui.label(RichText::new("Brak NPC.").small());
+                            } else {
+                                for npc in roster {
+                                    ui.label(
+                                        RichText::new(format!("{} — {}", npc.name, npc.role))
+                                            .small(),
+                                    );
+                                }
+                            }
                         } else {
-                            for d in &settlement.districts {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{} — {}",
-                                        district_info(d.kind).label,
-                                        d.name
-                                    ))
-                                    .small(),
-                                );
+                            let selected_di = self.selected_hit.and_then(|h| {
+                                if h.settlement_index == row.index {
+                                    h.district_index
+                                } else {
+                                    None
+                                }
+                            });
+                            for (di, (label, name)) in district_rows.iter().enumerate() {
+                                let selected = selected_di == Some(di);
+                                if ui
+                                    .selectable_label(selected, RichText::new(label).small())
+                                    .clicked()
+                                {
+                                    self.selected_hit = Some(SettlementHit {
+                                        settlement_index: row.index,
+                                        district_index: Some(di),
+                                    });
+                                    self.selected_info = Some(format!(
+                                        "{} · {} · {} mieszk.",
+                                        row.name,
+                                        name,
+                                        format_pop(row.population)
+                                    ));
+                                    self.rebuild_texture(ctx);
+                                }
+                            }
+                            if let Some(di) = selected_di {
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("NPC").small().strong());
+                                let roster = self
+                                    .npcs
+                                    .as_ref()
+                                    .map(|m| m.in_district(row.index, di))
+                                    .unwrap_or(&[]);
+                                if roster.is_empty() {
+                                    ui.label(RichText::new("Brak NPC.").small());
+                                } else {
+                                    for npc in roster {
+                                        ui.label(
+                                            RichText::new(format!("{} — {}", npc.name, npc.role))
+                                                .small(),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -1011,6 +1082,7 @@ impl MapApp {
             self.lod_cache.store(result.lod, view.clone());
             self.grid = Some(view.grid);
             self.settlements = Some(result.settlements);
+            self.npcs = Some(result.npcs);
             self.habitat = view.habitat;
             self.life = view.life;
             self.lod = result.lod;
@@ -1569,6 +1641,9 @@ fn generate_job(req: GenRequest) -> GenResult {
     let settlements = req
         .settlements
         .unwrap_or_else(|| generate_settlements_sampled(&sampler));
+    let npcs = req
+        .npcs
+        .unwrap_or_else(|| generate_npcs(req.seed, &settlements.settlements));
 
     let (grid, habitat, life) = match req.lod {
         LodLevel::Global => (generate_global_grid_sampled(&sampler), None, None),
@@ -1602,6 +1677,7 @@ fn generate_job(req: GenRequest) -> GenResult {
         lod: req.lod,
         grid,
         settlements,
+        npcs,
         habitat,
         life,
     }
