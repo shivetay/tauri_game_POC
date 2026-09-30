@@ -1,6 +1,6 @@
 # map_tests
 
-Podgląd proceduralnej mapy świata (**Rust + egui**). Teren, rzeki, osady i ekologia liczone są w tym samym procesie co UI. **Ten sam seed i te same parametry zawsze dają ten sam świat.**
+Podgląd proceduralnej mapy świata (**Rust + Bevy + egui** przez `bevy_egui`). Teren, rzeki, osady i ekologia liczone są w tym samym procesie co UI. **Ten sam seed i te same parametry zawsze dają ten sam świat.**
 
 ```bash
 cd src-tauri
@@ -72,7 +72,9 @@ Ten sam seed steruje też wysokością, wilgotnością, pasmami gór, wybrzeżem
 | Ścieżka | Rola |
 | --- | --- |
 | `src-tauri/src/world/` | Generacja (jedyna prawda terenu) |
-| `src-tauri/src/app.rs` | Okno egui, seed/params, LOD, legendy |
+| `src-tauri/src/main.rs` | Launcher Bevy (okno, `bevy_egui`, tekstura mapy) |
+| `src-tauri/src/session.rs` | Stan mapy i symulacji (bez egui) |
+| `src-tauri/src/app.rs` | UI egui: seed/params, LOD, legendy |
 | `src-tauri/src/render.rs` | Składanie tekstury mapy (teren + overlaye) |
 | `src-tauri/src/colors.rs` | Kolory biomów |
 | `src-tauri/src/settlements_draw.rs` | Rysowanie osad i dróg (RGBA) |

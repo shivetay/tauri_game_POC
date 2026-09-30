@@ -8,7 +8,7 @@ Workflows: `.cursor/skills/`.
 ## Source of truth
 
 - Terrain is computed **only in** `src-tauri/src/world/`.
-- UI lives in `src-tauri/src/app.rs` (egui) and paints textures from `render.rs`.
+- UI lives in `src-tauri/src/app.rs` (egui via Bevy/`bevy_egui`) and paints textures from `render.rs`.
 - Same seed + same `TerrainGenParams` → same world. Always.
 
 ## Domain state (current code)
@@ -40,7 +40,7 @@ Skills: `terrain-generation`, `map-ui`.
 
 ## Hard limits
 
-- Prefer existing crates: `noise`, `rayon`, `serde`, `eframe`/`egui`.
+- Prefer existing crates: `noise`, `rayon`, `serde`, `bevy`/`bevy_egui`/`egui`.
 - Leave no artifacts: unused vars/imports, dead exports, commented-out code, debug logs, `allow(dead_code)` instead of deletion.
 - Code comments: English. Agent files (`AGENTS.md`, `.cursor/rules`, `.cursor/skills`): English. README and `docs/`: Polish.
 - After a generation change, baseline seed `6` (Ellipse). Other `seed % 6` values must keep the same profile.
