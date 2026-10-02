@@ -46,6 +46,7 @@ Proponowany podział na etapy gry znajduje się w osobnych dokumentach:
 - [NPC — zależności i plan wdrożenia](./npc.md)
 - [Dzielnice — aktualna lista i zależności](./dzielnice.md)
 - [Budynki — lista według dzielnic i plan wdrożenia](./budynki.md)
+- [Budynki i profesje — powiązania oraz plan wdrożenia](./profesje-budynki.md)
 
 Demo jest ograniczonym wydaniem wybranej zawartości, a nie etapem wymagającym ukończenia całej Bety. Multiplayer i era przemysłowa pozostają opcjonalne.
 

@@ -9,12 +9,24 @@ pub const DEFAULT_TIME_SCALE: f64 = 60.0;
 /// Discrete speed multipliers relative to [`DEFAULT_TIME_SCALE`].
 pub const SPEED_MULTIPLIERS: [f64; 3] = [1.0, 10.0, 60.0];
 
+/// Fixed sky anchors for the day/night path indicator (stage 1).
+pub const SUNRISE_SECOND: u32 = 6 * 3600;
+pub const NOON_SECOND: u32 = 12 * 3600;
+pub const SUNSET_SECOND: u32 = 18 * 3600;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameTime {
     /// 1-based day index.
     pub day: u32,
     /// Seconds elapsed within the current day `[0, SECONDS_PER_DAY)`.
     pub second_of_day: u32,
+}
+
+/// Celestial body shown on the sky-path indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkyBody {
+    Sun,
+    Moon,
 }
 
 impl GameTime {
@@ -50,6 +62,36 @@ impl GameTime {
         let m = (self.second_of_day % 3600) / 60;
         let s = self.second_of_day % 60;
         format!("Dzień {} · {:02}:{:02}:{:02}", self.day, h, m, s)
+    }
+
+    /// Daytime is sunrise inclusive through sunset exclusive (`[06:00, 18:00)`).
+    pub fn is_daytime(self) -> bool {
+        self.second_of_day >= SUNRISE_SECOND && self.second_of_day < SUNSET_SECOND
+    }
+
+    pub fn sky_body(self) -> SkyBody {
+        if self.is_daytime() {
+            SkyBody::Sun
+        } else {
+            SkyBody::Moon
+        }
+    }
+
+    /// Progress on the sky path: east `0.0` → south `0.5` → west `1.0`.
+    /// Day tracks the sun (06→18); night tracks the moon (18→06).
+    pub fn sky_path_progress(self) -> f32 {
+        let day_len = (SUNSET_SECOND - SUNRISE_SECOND) as f32;
+        if self.is_daytime() {
+            (self.second_of_day - SUNRISE_SECOND) as f32 / day_len
+        } else {
+            let night_len = SECONDS_PER_DAY as f32 - day_len;
+            let since_sunset = if self.second_of_day >= SUNSET_SECOND {
+                self.second_of_day - SUNSET_SECOND
+            } else {
+                self.second_of_day + (SECONDS_PER_DAY as u32 - SUNSET_SECOND)
+            };
+            since_sunset as f32 / night_len
+        }
     }
 }
 
@@ -104,5 +146,43 @@ mod tests {
         assert_eq!(effective_time_scale(true, 10.0), 0.0);
         assert_eq!(effective_time_scale(false, 1.0), DEFAULT_TIME_SCALE);
         assert_eq!(effective_time_scale(false, 60.0), DEFAULT_TIME_SCALE * 60.0);
+    }
+
+    #[test]
+    fn sky_path_day_anchors() {
+        let sunrise = GameTime::start_of_day_one_at(6, 0, 0);
+        assert!(sunrise.is_daytime());
+        assert_eq!(sunrise.sky_body(), SkyBody::Sun);
+        assert!((sunrise.sky_path_progress() - 0.0).abs() < 1e-6);
+
+        let noon = GameTime {
+            day: 1,
+            second_of_day: NOON_SECOND,
+        };
+        assert_eq!(noon.sky_body(), SkyBody::Sun);
+        assert!((noon.sky_path_progress() - 0.5).abs() < 1e-6);
+
+        let almost_sunset = GameTime::start_of_day_one_at(17, 59, 59);
+        assert!(almost_sunset.is_daytime());
+        assert!(almost_sunset.sky_path_progress() > 0.99);
+    }
+
+    #[test]
+    fn sky_path_night_anchors() {
+        let sunset = GameTime {
+            day: 1,
+            second_of_day: SUNSET_SECOND,
+        };
+        assert!(!sunset.is_daytime());
+        assert_eq!(sunset.sky_body(), SkyBody::Moon);
+        assert!((sunset.sky_path_progress() - 0.0).abs() < 1e-6);
+
+        let midnight = GameTime::start_of_day_one_at(0, 0, 0);
+        assert_eq!(midnight.sky_body(), SkyBody::Moon);
+        assert!((midnight.sky_path_progress() - 0.5).abs() < 1e-6);
+
+        let almost_sunrise = GameTime::start_of_day_one_at(5, 59, 59);
+        assert!(!almost_sunrise.is_daytime());
+        assert!(almost_sunrise.sky_path_progress() > 0.99);
     }
 }
