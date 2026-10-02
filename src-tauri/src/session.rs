@@ -540,6 +540,7 @@ impl MapSession {
         self.pending_spawn = None;
         self.known_places.clear();
         self.known_chunks.clear();
+        self.game.reset_time();
         let config = self.config();
         self.explore_player_chunk(&config);
         self.update_visited_places();
@@ -840,8 +841,8 @@ impl MapSession {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
-        // Clock starts only once the map is ready (not while generating).
-        if !self.loading {
+        // Clock / day cycle runs only after spawn (and not while generating).
+        if !self.loading && self.player_spawn.is_some() {
             let game_secs = self.game.tick(dt);
             self.advance_movement(game_secs);
         }
