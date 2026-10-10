@@ -1,6 +1,6 @@
 # Aktualny stan prac
 
-**Stan na: 01.10.2026**
+**Stan na: 02.10.2026**
 
 ## Podsumowanie
 
@@ -16,6 +16,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Podróż piesza po lądzie, preferowanie grafu dróg, przejście między poziomami LOD, odkrywanie chunków i znanych osad.
 - Zegar gry z pauzą, prędkościami ×1/×10/×60 oraz ręcznym przesunięciem o godzinę; czas podróży aktualizuje pozycję gracza.
 - Wskaźnik cyklu dnia/nocy pod zegarem (po spawnie): oś wschód–południe–zachód ze słońcem (06–18) i księżycem (18–06); czas gry rusza dopiero po spawnie; mapa nie jest tintowana.
+- Kalendarz gry: rok 360-dniowy (12×30), etykieta zegara z rokiem, dniem i miesiącem; cztery pory roku (Wiosna/Lato/Jesień/Zima, po 3 miesiące). Wygląd mapy nadal niezależny od pory roku.
 - Aplikacja desktopowa oparta o Bevy i egui.
 
 ## W trakcie
@@ -29,7 +30,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Zapis i wczytywanie stanu sesji.
 - Symulacja zmian populacji, aktywności i harmonogramów NPC, frakcji oraz wydarzeń świata.
 - Rozgrywkowe delty terenu i infrastruktura gracza.
-- Kalendarz, pory roku oraz ich wpływ na wygląd mapy.
+- Wpływ pory roku na wygląd mapy (etap 4 z issue #8).
 
 ## Zasady aktualizacji
 
