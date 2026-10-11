@@ -4,7 +4,7 @@ use crate::colors::BIOMES;
 use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
-use crate::game_time::SPEED_MULTIPLIERS;
+use crate::game_time::{GameTime, SkyBody, SPEED_MULTIPLIERS};
 use crate::render::{compose_map_rgba, ComposeInput};
 use crate::session::{
     biome_label, cell_world_at_pixel, format_pop, is_land_biome, player_at, MapSession,
@@ -334,6 +334,11 @@ impl MapApp {
                 };
                 ui.label(RichText::new(status).small());
             });
+
+            if self.session.player_spawn.is_some() {
+                ui.add_space(6.0);
+                draw_sky_path_indicator(ui, self.session.game.time());
+            }
 
             ui.add_space(8.0);
             let pause_label = if self.session.game.paused() { "Wznów" } else { "Pauza" };
@@ -879,6 +884,68 @@ fn draw_map_scale(painter: &egui::Painter, map_rect: egui::Rect, world_span_km: 
         label,
         FontId::proportional(12.0),
         white,
+    );
+}
+
+/// Horizontal sky path under the clock: east → south → west, sun by day / moon by night.
+fn draw_sky_path_indicator(ui: &mut egui::Ui, time: GameTime) {
+    let height = 44.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    let pad_x = 4.0;
+    let track_y = rect.top() + 16.0;
+    let x0 = rect.left() + pad_x;
+    let x1 = rect.right() - pad_x;
+    let mid_x = (x0 + x1) * 0.5;
+
+    painter.line_segment(
+        [pos2(x0, track_y), pos2(x1, track_y)],
+        egui::Stroke::new(1.5, Color32::from_gray(120)),
+    );
+    for x in [x0, mid_x, x1] {
+        painter.line_segment(
+            [pos2(x, track_y - 4.0), pos2(x, track_y + 4.0)],
+            egui::Stroke::new(1.0, Color32::from_gray(160)),
+        );
+    }
+
+    let label_font = FontId::proportional(10.0);
+    let label_color = Color32::from_gray(180);
+    painter.text(
+        pos2(x0, rect.bottom() - 2.0),
+        Align2::LEFT_BOTTOM,
+        "Wschód",
+        label_font.clone(),
+        label_color,
+    );
+    painter.text(
+        pos2(mid_x, rect.bottom() - 2.0),
+        Align2::CENTER_BOTTOM,
+        "Południe",
+        label_font.clone(),
+        label_color,
+    );
+    painter.text(
+        pos2(x1, rect.bottom() - 2.0),
+        Align2::RIGHT_BOTTOM,
+        "Zachód",
+        label_font,
+        label_color,
+    );
+
+    let progress = time.sky_path_progress().clamp(0.0, 1.0);
+    let marker_x = x0 + (x1 - x0) * progress;
+    let (symbol, color) = match time.sky_body() {
+        SkyBody::Sun => ("☀", Color32::from_rgb(255, 200, 64)),
+        SkyBody::Moon => ("☾", Color32::from_rgb(180, 200, 255)),
+    };
+    painter.text(
+        pos2(marker_x, track_y),
+        Align2::CENTER_CENTER,
+        symbol,
+        FontId::proportional(16.0),
+        color,
     );
 }
 

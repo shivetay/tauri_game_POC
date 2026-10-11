@@ -39,6 +39,8 @@ W najmniejszych osadach funkcje mogą łączyć się w jednym obiekcie, np. izba
 
 `typ i populacja osady + teren/biom + woda/zasoby + drogi → możliwe budynki → usługi, praca i handel dla NPC oraz gracza`.
 
+Powiązanie poszczególnych budynków z profesjami opisuje [Budynki i profesje](./profesje-budynki.md).
+
 - Jeśli osada ma dzielnice, dzielnica wskazuje pulę budynków; warunki lokalne filtrują tę pulę.
 - Jeśli osada nie ma dzielnic, ten sam dobór korzysta z puli podstawowej i lokalnych warunków, a budynki trafiają do wspólnego obszaru osady.
 - Wielkość osady ogranicza liczbę i skalę budynków; mała populacja może łączyć kilka funkcji w jednym budynku.
