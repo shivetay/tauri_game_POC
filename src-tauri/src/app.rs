@@ -203,10 +203,7 @@ impl MapApp {
                                 ui.label(RichText::new("Brak NPC.").small());
                             } else {
                                 for npc in roster {
-                                    ui.label(
-                                        RichText::new(format!("{} — {}", npc.name, npc.role))
-                                            .small(),
-                                    );
+                                    ui.label(RichText::new(npc.preview_line()).small());
                                 }
                             }
                         } else {
@@ -248,10 +245,7 @@ impl MapApp {
                                     ui.label(RichText::new("Brak NPC.").small());
                                 } else {
                                     for npc in roster {
-                                        ui.label(
-                                            RichText::new(format!("{} — {}", npc.name, npc.role))
-                                                .small(),
-                                        );
+                                        ui.label(RichText::new(npc.preview_line()).small());
                                     }
                                 }
                             }
@@ -272,6 +266,81 @@ impl MapApp {
                 }
             });
             ui.add_space(4.0);
+        }
+    }
+
+    fn ui_local_area(&mut self, ui: &mut egui::Ui) {
+        let Some(area) = self.session.player_area else {
+            return;
+        };
+        let Some(settlement) = self
+            .session
+            .settlements
+            .as_ref()
+            .and_then(|m| m.settlements.get(area.settlement_index))
+        else {
+            return;
+        };
+        let settlement_name = settlement.name.clone();
+        let district_rows: Vec<(String, String)> = settlement
+            .districts
+            .iter()
+            .map(|d| {
+                (
+                    format!("{} — {}", district_info(d.kind).label, d.name),
+                    d.name.clone(),
+                )
+            })
+            .collect();
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Lokalizacja").strong());
+        ui.label(RichText::new(&settlement_name).small());
+        if !district_rows.is_empty() {
+            ui.label(
+                RichText::new("Przełącz obszar, by zobaczyć mieszkańców")
+                    .small()
+                    .weak(),
+            );
+            ui.add_space(4.0);
+            ui.label(RichText::new("Dzielnice").small().strong());
+            for (di, (label, _)) in district_rows.iter().enumerate() {
+                let selected = area.district_index == Some(di);
+                if ui
+                    .selectable_label(selected, RichText::new(label).small())
+                    .clicked()
+                {
+                    self.session.set_player_district(di);
+                }
+            }
+        } else {
+            ui.label(RichText::new("Brak podziału na dzielnice.").small().weak());
+        }
+
+        ui.add_space(4.0);
+        ui.label(RichText::new("NPC").small().strong());
+        let roster = match area.district_index {
+            Some(di) => self
+                .session
+                .npcs
+                .as_ref()
+                .map(|m| m.in_district(area.settlement_index, di))
+                .unwrap_or(&[]),
+            None => self
+                .session
+                .npcs
+                .as_ref()
+                .map(|m| m.in_settlement(area.settlement_index))
+                .unwrap_or(&[]),
+        };
+        if roster.is_empty() {
+            ui.label(RichText::new("Brak NPC.").small());
+        } else {
+            for npc in roster {
+                ui.label(RichText::new(npc.preview_line()).small());
+            }
         }
     }
 
@@ -441,6 +510,7 @@ impl MapApp {
                 {
                     self.session.focus_player();
                 }
+                self.ui_local_area(ui);
                 self.ui_travel(ui);
             } else if self.session.show_place_list() {
                 ui.separator();

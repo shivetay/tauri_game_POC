@@ -27,9 +27,14 @@ NPC zamieniają dane świata w informacje i interakcje. Są mieszkańcami konkre
 - Zlecenia NPC łączą potrzeby osady z podróżą i zasobami biomów.
 - Harmonogramy i symulacja ruchu mogą wpływać na dostępność usług, ale nie są potrzebne do pierwszej pętli.
 
+## Stan etapu 1 (cechy)
+
+Wdrożone: skale cech, cel życia, wygląd tekstowy, umiejętności oraz `inclination` — szczegóły w [npc-cechy.md](./npc-cechy.md). Brak dialogu, handlu i zapisu relacji.
+
 ## Kolejność wdrażania
 
-1. Zachować deterministyczne imiona/role powiązane z osadą i dzielnicą.
+1. Zachować deterministyczne imiona/role powiązane z osadą i dzielnicą. *(zrobione)*
+1a. Cechy liczbowe + API skłonności. *(zrobione — [npc-cechy.md](./npc-cechy.md))*
 2. Nadać rolom proste, działające funkcje: informator, sprzedawca, zleceniodawca.
 3. Dodać dialog/zlecenie zależne od stanu osady, reputacji i tagów historii postaci.
 4. Zapisywać relacje oraz zakończenie rozmów/zleceń w stanie sesji.

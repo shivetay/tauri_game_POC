@@ -46,6 +46,14 @@ const ROAD_NODE_LINK_EPS: f32 = 1.5;
 /// |dot(move, segment)| above this ⇒ traveling along the road (not merely crossing).
 const ROAD_ALIGN_MIN: f32 = 0.85;
 
+/// UI location inside a settlement the player is standing in (district switch is UI-only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlayerArea {
+    pub settlement_index: usize,
+    /// `None` when the settlement has no districts (settlement-wide NPC roster).
+    pub district_index: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinal {
     North,
@@ -244,6 +252,8 @@ pub struct MapSession {
     pub(crate) player_spawn: Option<(f32, f32)>,
     /// Current marker position.
     pub(crate) player_pos: Option<(f32, f32)>,
+    /// Settlement/district UI focus while the player stands inside a settlement radius.
+    pub(crate) player_area: Option<PlayerArea>,
     /// Remaining walk waypoints (first = current leg target). Prefer road network.
     pub(crate) move_path: Vec<(f32, f32)>,
     terrain: Option<TerrainSampler>,
@@ -296,6 +306,7 @@ impl MapSession {
             pending_spawn: None,
             player_spawn: None,
             player_pos: None,
+            player_area: None,
             move_path: Vec::new(),
             terrain: None,
             known_places: HashSet::new(),
@@ -358,6 +369,7 @@ impl MapSession {
             self.pending_spawn = None;
             self.player_spawn = None;
             self.player_pos = None;
+            self.player_area = None;
             self.move_path.clear();
             self.terrain = None;
             self.known_places.clear();
@@ -546,23 +558,91 @@ impl MapSession {
         self.known_places.contains(&Self::place_key(x, y))
     }
 
-    /// Mark settlements the player is currently standing at as visited.
-    pub(crate) fn update_visited_places(&mut self) -> bool {
-        let Some(pos) = self.player_pos else {
-            return false;
-        };
-        let Some(map) = &self.settlements else {
-            return false;
-        };
-        let mut changed = false;
-        for s in &map.settlements {
+    /// Index of the settlement whose radius contains the player, if any.
+    pub(crate) fn settlement_at_player(&self) -> Option<usize> {
+        let pos = self.player_pos?;
+        let map = self.settlements.as_ref()?;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, s) in map.settlements.iter().enumerate() {
             let r = s.radius.max(AT_PLACE_EPS);
             let dx = s.x - pos.0;
             let dy = s.y - pos.1;
-            if dx * dx + dy * dy <= r * r {
-                changed |= self.known_places.insert(Self::place_key(s.x, s.y));
+            let d2 = dx * dx + dy * dy;
+            if d2 <= r * r {
+                best = match best {
+                    Some((_, bd)) if bd <= d2 => best,
+                    _ => Some((i, d2)),
+                };
             }
         }
+        best.map(|(i, _)| i)
+    }
+
+    /// Keep `player_area` aligned with the settlement underfoot; preserve district UI choice.
+    pub(crate) fn sync_player_area(&mut self) {
+        let Some(si) = self.settlement_at_player() else {
+            self.player_area = None;
+            return;
+        };
+        let has_districts = self
+            .settlements
+            .as_ref()
+            .and_then(|m| m.settlements.get(si))
+            .is_some_and(|s| !s.districts.is_empty());
+        let district_index = if has_districts {
+            match self.player_area {
+                Some(area) if area.settlement_index == si => {
+                    area.district_index.or(Some(0))
+                }
+                _ => Some(0),
+            }
+        } else {
+            None
+        };
+        self.player_area = Some(PlayerArea {
+            settlement_index: si,
+            district_index,
+        });
+    }
+
+    pub(crate) fn set_player_district(&mut self, district_index: usize) {
+        let Some(area) = self.player_area.as_mut() else {
+            return;
+        };
+        let Some(settlement) = self
+            .settlements
+            .as_ref()
+            .and_then(|m| m.settlements.get(area.settlement_index))
+        else {
+            return;
+        };
+        if district_index >= settlement.districts.len() {
+            return;
+        }
+        area.district_index = Some(district_index);
+    }
+
+    /// Mark settlements the player is currently standing at as visited.
+    pub(crate) fn update_visited_places(&mut self) -> bool {
+        let Some(pos) = self.player_pos else {
+            self.player_area = None;
+            return false;
+        };
+        let mut changed = false;
+        if let Some(map) = &self.settlements {
+            for s in &map.settlements {
+                let r = s.radius.max(AT_PLACE_EPS);
+                let dx = s.x - pos.0;
+                let dy = s.y - pos.1;
+                if dx * dx + dy * dy <= r * r {
+                    changed |= self.known_places.insert(Self::place_key(s.x, s.y));
+                }
+            }
+        } else {
+            self.player_area = None;
+            return false;
+        }
+        self.sync_player_area();
         changed
     }
 
@@ -577,6 +657,7 @@ impl MapSession {
         };
         self.player_spawn = Some(pos);
         self.player_pos = Some(pos);
+        self.player_area = None;
         self.move_path.clear();
         self.pending_spawn = None;
         self.known_places.clear();

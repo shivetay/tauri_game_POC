@@ -44,6 +44,7 @@ Proponowany podział na etapy gry znajduje się w osobnych dokumentach:
 - [Miasta i osady — zależności i plan wdrożenia](./miasta-osady.md)
 - [Państwa i frakcje — zależności i plan wdrożenia](./panstwa.md)
 - [NPC — zależności i plan wdrożenia](./npc.md)
+- [NPC — cechy i skłonności (etap 1)](./npc-cechy.md)
 - [Dzielnice — aktualna lista i zależności](./dzielnice.md)
 - [Budynki — lista według dzielnic i plan wdrożenia](./budynki.md)
 - [Budynki i profesje — powiązania oraz plan wdrożenia](./profesje-budynki.md)
