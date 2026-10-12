@@ -1,10 +1,12 @@
 use egui::ColorImage;
 
+use crate::borders_draw::{draw_borders, BorderDrawMode};
 use crate::colors::biome_rgb;
 use crate::ecology_draw::{draw_chunk_habitat_overlay, draw_habitat_overlay};
 use crate::settlements_draw::{
     draw_roads, draw_settlements, RoadDetail, SettlementDrawStyle, SettlementHit, WorldBounds,
 };
+use crate::world::borders::{CityBorder, Realm, RealmBorder, TerritoryMap};
 use crate::world::ecology::{ChunkEcologyMap, RegionEcologyMap};
 use crate::world::settlement::{Road, Settlement};
 use crate::world::types::{TerrainCell, TerrainGrid, TileType};
@@ -168,6 +170,15 @@ pub struct ComposeInput<'a> {
     pub fog_explored: Option<&'a [WorldBounds]>,
     /// Active vision circle (cx, cy, radius); unioned with explored rects.
     pub fog_vision: Option<(f32, f32, f32)>,
+    pub borders: Option<BordersOverlay<'a>>,
+}
+
+pub struct BordersOverlay<'a> {
+    pub mode: BorderDrawMode,
+    pub territory: &'a TerritoryMap,
+    pub realms: &'a [Realm],
+    pub realm_borders: &'a [RealmBorder],
+    pub city_borders: &'a [CityBorder],
 }
 
 /// Tip at spawn; base above so the marker points into the chosen tile.
@@ -277,6 +288,20 @@ pub fn compose_map_rgba(input: ComposeInput<'_>) -> (usize, usize, Vec<u8>) {
 
     if input.show_grid {
         draw_region_grid(&mut rgba, w, h, input.cell_size);
+    }
+
+    if let Some(borders) = input.borders {
+        draw_borders(
+            &mut rgba,
+            w,
+            h,
+            &input.bounds,
+            borders.territory,
+            borders.realms,
+            borders.realm_borders,
+            borders.city_borders,
+            borders.mode,
+        );
     }
 
     draw_roads(

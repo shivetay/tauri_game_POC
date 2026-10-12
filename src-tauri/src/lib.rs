@@ -1,4 +1,5 @@
 pub mod app;
+pub mod borders_draw;
 pub mod session;
 pub mod colors;
 pub mod ecology_draw;

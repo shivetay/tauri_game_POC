@@ -5,7 +5,7 @@ use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
 use crate::game_time::{GameTime, SkyBody, SPEED_MULTIPLIERS};
-use crate::render::{compose_map_rgba, ComposeInput};
+use crate::render::{compose_map_rgba, BordersOverlay, ComposeInput};
 use crate::session::{
     biome_label, cell_world_at_pixel, format_pop, is_land_biome, player_at, MapSession,
     Cardinal, LodLevel, VISION_RADIUS,
@@ -66,6 +66,16 @@ impl MapApp {
         } else {
             (None, None)
         };
+        let borders = match (s.border_draw_mode(), s.territory()) {
+            (Some(mode), Some(territory)) => Some(BordersOverlay {
+                mode,
+                territory,
+                realms: s.realms(),
+                realm_borders: s.realm_borders(),
+                city_borders: s.city_borders(),
+            }),
+            _ => None,
+        };
         Some(compose_map_rgba(ComposeInput {
             grid,
             cell_size,
@@ -81,6 +91,7 @@ impl MapApp {
             player_spawn: s.player_pos.or(s.player_spawn),
             fog_explored,
             fog_vision,
+            borders,
         }))
     }
 
@@ -546,6 +557,13 @@ impl MapApp {
             });
         }
 
+        ui.separator();
+        if ui
+            .checkbox(&mut self.session.show_borders, "Granice")
+            .changed()
+        {
+            self.session.texture_dirty = true;
+        }
         ui.separator();
         self.ui_ecology_legend(ui);
         self.ui_settlement_legend(ui);
