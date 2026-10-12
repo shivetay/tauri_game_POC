@@ -6,10 +6,12 @@ use std::time::Instant;
 
 use crate::colors::BIOMES;
 use crate::game_loop::GameLoop;
+use crate::borders_draw::BorderDrawMode;
 use crate::perf::PerfStats;
 use crate::settlements_draw::{
     settlement_info, RoadDetail, SettlementDrawStyle, SettlementHit, WorldBounds,
 };
+use crate::world::borders::{CityBorder, Realm, RealmBorder, TerritoryMap};
 use crate::world::config::{TerrainGenParams, WorldConfig};
 use crate::world::ecology::{
     generate_chunk_ecology_sampled, generate_region_ecology_sampled, ChunkEcologyMap,
@@ -225,6 +227,8 @@ pub struct MapSession {
     pub(crate) params: TerrainGenParams,
     pub(crate) draft_params: TerrainGenParams,
     pub(crate) show_seed_info: bool,
+    /// POC overlay: realm/city borders (default off).
+    pub(crate) show_borders: bool,
     pub(crate) lod: LodLevel,
     pub(crate) grid: Option<TerrainGrid>,
     pub(crate) settlements: Option<SettlementMap>,
@@ -279,6 +283,7 @@ impl MapSession {
             params: TerrainGenParams::default(),
             draft_params: TerrainGenParams::default(),
             show_seed_info: false,
+            show_borders: false,
             lod: LodLevel::Global,
             grid: None,
             settlements: None,
@@ -456,6 +461,42 @@ impl MapSession {
             LodLevel::Global => SettlementDrawStyle::Marker,
             _ => SettlementDrawStyle::Plan,
         }
+    }
+
+    pub(crate) fn border_draw_mode(&self) -> Option<BorderDrawMode> {
+        if !self.show_borders {
+            return None;
+        }
+        Some(match self.lod {
+            LodLevel::Global => BorderDrawMode::Realms,
+            LodLevel::Region(_) => BorderDrawMode::RealmsAndCities,
+            LodLevel::Chunk { .. } => BorderDrawMode::Cities,
+        })
+    }
+
+    pub(crate) fn territory(&self) -> Option<&TerritoryMap> {
+        self.settlements.as_ref().map(|m| &m.territory)
+    }
+
+    pub(crate) fn realms(&self) -> &[Realm] {
+        self.settlements
+            .as_ref()
+            .map(|m| m.realms.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub(crate) fn realm_borders(&self) -> &[RealmBorder] {
+        self.settlements
+            .as_ref()
+            .map(|m| m.realm_borders.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub(crate) fn city_borders(&self) -> &[CityBorder] {
+        self.settlements
+            .as_ref()
+            .map(|m| m.city_borders.as_slice())
+            .unwrap_or(&[])
     }
 
     pub(crate) fn in_vision(&self, wx: f32, wy: f32) -> bool {

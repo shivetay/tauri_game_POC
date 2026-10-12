@@ -3,6 +3,7 @@ use std::collections::{BinaryHeap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::world::borders::{self, CityBorder, Realm, RealmBorder, TerritoryMap};
 use crate::world::config::{LodLevel, WorldConfig};
 use crate::world::elevation::{is_water_biome, COAST_M, HIGH_M, UPLAND_M};
 use crate::world::prng::unit_noise;
@@ -139,6 +140,14 @@ pub struct RoadPoint {
 pub struct SettlementMap {
     pub settlements: Vec<Settlement>,
     pub roads: Vec<Road>,
+    #[serde(default)]
+    pub city_borders: Vec<CityBorder>,
+    #[serde(default)]
+    pub realms: Vec<Realm>,
+    #[serde(default)]
+    pub realm_borders: Vec<RealmBorder>,
+    #[serde(default)]
+    pub territory: TerritoryMap,
 }
 
 struct Tier {
@@ -305,9 +314,14 @@ pub fn generate_sampled(sampler: &TerrainSampler) -> SettlementMap {
         &mut out,
     );
     refine_street_layouts(seed, sampler, &mut out);
+    let borders = borders::generate(seed, sampler, &out, &roads);
     SettlementMap {
         settlements: out,
         roads,
+        city_borders: borders.city_borders,
+        realms: borders.realms,
+        realm_borders: borders.realm_borders,
+        territory: borders.territory,
     }
 }
 
