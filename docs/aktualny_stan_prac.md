@@ -1,6 +1,6 @@
 # Aktualny stan prac
 
-**Stan na: 12.10.2026**
+**Stan na: 14.10.2026**
 
 ## Podsumowanie
 
@@ -11,8 +11,8 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Deterministyczne generowanie świata z seeda i parametrów; sześć profili kształtu oraz trzy poziomy widoku: świat, region i chunk.
 - Teren, wysokości, biomy, sieć rzek oraz generowane osady z populacją, dzielnicami, drogami i mostami.
 - Warstwy ekologii dla regionów i chunków oraz flora i fauna prezentowane w UI.
-- Postacie niezależne generowane deterministycznie dla osad i dzielnic: cechy liczbowe, cel życia, wygląd, umiejętności oraz API skłonności (`inclination`); podgląd w panelu osady. Szczegóły: [npc-cechy.md](./npc-cechy.md).
-- Po spawnie, w zasięgu osady: panel Lokalizacja z NPC bieżącego obszaru i przełączaniem dzielnic (UI, bez zmiany pozycji gracza).
+- Postacie niezależne: cechy, skłonności, potrzeby, home/cel zaopatrzenia; w osadzie gracza ruch offroad (jak gracz) i statusy (`kupuje`/`zbiera`/`w drodze`…) w liście — bez markerów na mapie. Szczegóły: [npc-cechy.md](./npc-cechy.md).
+- Po spawnie: panel Lokalizacja (NPC | Budynki), budynki z `(x,y)` i statycznym zapasem Sell obok nazwy. Szczegóły: [budynki-stan.md](./budynki-stan.md).
 - Wybór miejsca startu i spawn postaci na mapie.
 - Podróż piesza po lądzie, preferowanie grafu dróg, przejście między poziomami LOD, odkrywanie chunków i znanych osad.
 - Zegar gry z pauzą, prędkościami ×1/×10/×60 oraz ręcznym przesunięciem o godzinę; czas podróży aktualizuje pozycję gracza.
@@ -29,7 +29,8 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Ekwipunek, zbieranie zasobów i potrzeby survivalowe.
 - Handel, dynamiczna gospodarka, praca, zlecenia i questy.
 - Zapis i wczytywanie stanu sesji.
-- Dialog, handel i zlecenia oparte o skłonności NPC; zapis relacji w sesji.
+- Handel z graczem, markery NPC na mapie.
+- Dialog i zlecenia oparte o skłonności NPC; zapis relacji w sesji.
 - Symulacja zmian populacji, aktywności i harmonogramów NPC, frakcji oraz wydarzeń świata.
 - Rozgrywkowe delty terenu i infrastruktura gracza.
 - Wpływ pory roku na wygląd mapy (etap 4 z issue #8).

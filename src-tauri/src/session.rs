@@ -22,7 +22,12 @@ use crate::world::grid::{
     generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
 };
 use crate::world::sampler::TerrainSampler;
-use crate::world::npc::{generate as generate_npcs, NpcMap};
+use crate::world::building::{generate as generate_buildings, BuildingMap};
+use crate::world::building::NeedIntent;
+use crate::world::npc::{
+    activity_at_home, activity_at_supply, find_supply_building, generate as generate_npcs,
+    primary_buy_good, NpcActivity, NpcMap,
+};
 use crate::world::settlement::{
     generate_sampled as generate_settlements_sampled, Road, RoadKind, Settlement, SettlementKind,
     SettlementMap,
@@ -53,6 +58,33 @@ pub(crate) struct PlayerArea {
     /// `None` when the settlement has no districts (settlement-wide NPC roster).
     pub district_index: Option<usize>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LocalAreaTab {
+    #[default]
+    Npcs,
+    Buildings,
+}
+
+/// In-settlement NPC simulation (logical movement; no map markers).
+#[derive(Debug, Clone)]
+pub(crate) struct NpcRuntime {
+    pub npc_index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub activity: NpcActivity,
+    /// Live destination building index (refreshed when starting a trip).
+    pub dest_building: Option<usize>,
+    /// Remaining game-seconds for stationary activities.
+    pub action_timer_secs: f64,
+}
+
+/// Dwell time at a building before the next transition (game seconds).
+/// Kept short so ×1 playback shows status changes within a few real seconds.
+const NPC_ACTION_GAME_SECS: f64 = 3.0 * 60.0;
+const NPC_HOME_DWELL_GAME_SECS: f64 = 2.0 * 60.0;
+const NPC_STOCK_BUY: i16 = -1;
+const NPC_STOCK_PRODUCE: i16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinal {
@@ -159,6 +191,8 @@ struct GenRequest {
     settlements: Option<SettlementMap>,
     /// Reuse NPCs with settlements (same seed/params).
     npcs: Option<NpcMap>,
+    /// Reuse buildings with settlements (same seed/params).
+    buildings: Option<BuildingMap>,
 }
 
 struct GenResult {
@@ -168,6 +202,7 @@ struct GenResult {
     grid: TerrainGrid,
     settlements: SettlementMap,
     npcs: NpcMap,
+    buildings: BuildingMap,
     habitat: Option<RegionEcologyMap>,
     life: Option<ChunkEcologyMap>,
 }
@@ -241,6 +276,7 @@ pub struct MapSession {
     pub(crate) grid: Option<TerrainGrid>,
     pub(crate) settlements: Option<SettlementMap>,
     pub(crate) npcs: Option<NpcMap>,
+    pub(crate) buildings: Option<BuildingMap>,
     pub(crate) habitat: Option<RegionEcologyMap>,
     pub(crate) life: Option<ChunkEcologyMap>,
     pub texture_dirty: bool,
@@ -254,6 +290,10 @@ pub struct MapSession {
     pub(crate) player_pos: Option<(f32, f32)>,
     /// Settlement/district UI focus while the player stands inside a settlement radius.
     pub(crate) player_area: Option<PlayerArea>,
+    /// NPC vs buildings list in the local-area panel.
+    pub(crate) local_area_tab: LocalAreaTab,
+    /// Live NPC positions/activities for the settlement under the player.
+    pub(crate) npc_runtimes: Vec<NpcRuntime>,
     /// Remaining walk waypoints (first = current leg target). Prefer road network.
     pub(crate) move_path: Vec<(f32, f32)>,
     terrain: Option<TerrainSampler>,
@@ -298,6 +338,7 @@ impl MapSession {
             grid: None,
             settlements: None,
             npcs: None,
+            buildings: None,
             habitat: None,
             life: None,
             texture_dirty: false,
@@ -307,6 +348,8 @@ impl MapSession {
             player_spawn: None,
             player_pos: None,
             player_area: None,
+            local_area_tab: LocalAreaTab::Npcs,
+            npc_runtimes: Vec::new(),
             move_path: Vec::new(),
             terrain: None,
             known_places: HashSet::new(),
@@ -370,6 +413,8 @@ impl MapSession {
             self.player_spawn = None;
             self.player_pos = None;
             self.player_area = None;
+            self.local_area_tab = LocalAreaTab::Npcs;
+            self.npc_runtimes.clear();
             self.move_path.clear();
             self.terrain = None;
             self.known_places.clear();
@@ -379,10 +424,14 @@ impl MapSession {
         self.loading = true;
         self.selected_info = None;
         self.selected_hit = None;
-        let (settlements, npcs) = if refresh_settlements {
-            (None, None)
+        let (settlements, npcs, buildings) = if refresh_settlements {
+            (None, None, None)
         } else {
-            (self.settlements.clone(), self.npcs.clone())
+            (
+                self.settlements.clone(),
+                self.npcs.clone(),
+                self.buildings.clone(),
+            )
         };
         let _ = self.tx.send(GenRequest {
             id: self.request_id,
@@ -391,6 +440,7 @@ impl MapSession {
             lod: self.lod,
             settlements,
             npcs,
+            buildings,
         });
     }
 
@@ -582,8 +632,10 @@ impl MapSession {
     pub(crate) fn sync_player_area(&mut self) {
         let Some(si) = self.settlement_at_player() else {
             self.player_area = None;
+            self.npc_runtimes.clear();
             return;
         };
+        let prev_si = self.player_area.map(|a| a.settlement_index);
         let has_districts = self
             .settlements
             .as_ref()
@@ -603,6 +655,269 @@ impl MapSession {
             settlement_index: si,
             district_index,
         });
+        if prev_si != Some(si) || self.npc_runtimes.is_empty() {
+            self.rebuild_npc_runtimes(si);
+        }
+    }
+
+    pub(crate) fn rebuild_npc_runtimes(&mut self, settlement_index: usize) {
+        self.npc_runtimes.clear();
+        let Some(npcs) = self.npcs.as_ref() else {
+            return;
+        };
+        let Some(buildings) = self.buildings.as_ref() else {
+            return;
+        };
+        for (i, npc) in npcs.npcs.iter().enumerate() {
+            if npc.settlement_index != settlement_index {
+                continue;
+            }
+            let (x, y) = npc
+                .home_building_index
+                .and_then(|bi| buildings.buildings.get(bi))
+                .map(|b| (b.x, b.y))
+                .unwrap_or((0.0, 0.0));
+            let activity = activity_at_home(&npc.role);
+            self.npc_runtimes.push(NpcRuntime {
+                npc_index: i,
+                x,
+                y,
+                activity,
+                dest_building: npc.home_building_index,
+                action_timer_secs: NPC_HOME_DWELL_GAME_SECS,
+            });
+        }
+    }
+
+    pub(crate) fn npc_activity(&self, npc_index: usize) -> Option<NpcActivity> {
+        self.npc_runtimes
+            .iter()
+            .find(|r| r.npc_index == npc_index)
+            .map(|r| r.activity)
+    }
+
+    /// Live supply destination for UI (`po:`), preferring runtime dest with stock.
+    pub(crate) fn npc_supply_dest(&self, npc_index: usize) -> Option<usize> {
+        let runtime = self.npc_runtimes.iter().find(|r| r.npc_index == npc_index)?;
+        if matches!(
+            runtime.activity,
+            NpcActivity::TravelToSupply | NpcActivity::Buying | NpcActivity::Selling
+        ) {
+            if let Some(d) = runtime.dest_building {
+                return Some(d);
+            }
+        }
+        let npc = self.npcs.as_ref()?.npcs.get(npc_index)?;
+        let buildings = self.buildings.as_ref()?;
+        find_supply_building(
+            buildings,
+            npc.settlement_index,
+            npc.home_building_index,
+            &npc.needs,
+        )
+    }
+
+    /// Advance local NPC movement/activities with the same offroad walk speed as the player.
+    pub(crate) fn advance_npc_runtimes(&mut self, game_secs: f64) {
+        if game_secs <= 0.0 || !game_secs.is_finite() {
+            return;
+        }
+        let Some(area) = self.player_area else {
+            return;
+        };
+        let Some(npc_map) = self.npcs.as_ref() else {
+            return;
+        };
+        #[derive(Clone)]
+        struct NpcSnap {
+            settlement_index: usize,
+            role: String,
+            home: Option<usize>,
+            needs: Vec<crate::world::building::BuildingNeed>,
+        }
+        let snaps: Vec<Option<NpcSnap>> = npc_map
+            .npcs
+            .iter()
+            .map(|n| {
+                Some(NpcSnap {
+                    settlement_index: n.settlement_index,
+                    role: n.role.clone(),
+                    home: n.home_building_index,
+                    needs: n.needs.clone(),
+                })
+            })
+            .collect();
+        let speed = WALK_OFFROAD_WU_PER_GAME_HOUR / 3600.0;
+        let step = speed * game_secs as f32;
+        let Some(buildings) = self.buildings.as_mut() else {
+            return;
+        };
+
+        for runtime in &mut self.npc_runtimes {
+            let Some(snap) = snaps.get(runtime.npc_index).and_then(|s| s.as_ref()) else {
+                continue;
+            };
+            if snap.settlement_index != area.settlement_index {
+                continue;
+            }
+            match runtime.activity {
+                NpcActivity::TravelToSupply => {
+                    let dest = runtime.dest_building.or_else(|| {
+                        find_supply_building(
+                            buildings,
+                            snap.settlement_index,
+                            snap.home,
+                            &snap.needs,
+                        )
+                    });
+                    let Some(ti) = dest else {
+                        runtime.activity = activity_at_home(&snap.role);
+                        runtime.dest_building = snap.home;
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                        continue;
+                    };
+                    runtime.dest_building = Some(ti);
+                    let Some(target) = buildings.buildings.get(ti) else {
+                        continue;
+                    };
+                    let (tx, ty) = (target.x, target.y);
+                    let dx = tx - runtime.x;
+                    let dy = ty - runtime.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist <= step || dist < 1e-4 {
+                        runtime.x = tx;
+                        runtime.y = ty;
+                        runtime.activity = activity_at_supply(&snap.role, &snap.needs);
+                        runtime.action_timer_secs = NPC_ACTION_GAME_SECS;
+                    } else {
+                        let t = step / dist;
+                        runtime.x += dx * t;
+                        runtime.y += dy * t;
+                    }
+                }
+                NpcActivity::TravelHome => {
+                    let Some(hi) = snap.home else {
+                        runtime.activity = NpcActivity::AtHome;
+                        runtime.dest_building = None;
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                        continue;
+                    };
+                    runtime.dest_building = Some(hi);
+                    let Some(home) = buildings.buildings.get(hi) else {
+                        continue;
+                    };
+                    let (hx, hy) = (home.x, home.y);
+                    let dx = hx - runtime.x;
+                    let dy = hy - runtime.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist <= step || dist < 1e-4 {
+                        runtime.x = hx;
+                        runtime.y = hy;
+                        runtime.activity = activity_at_home(&snap.role);
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                    } else {
+                        let t = step / dist;
+                        runtime.x += dx * t;
+                        runtime.y += dy * t;
+                    }
+                }
+                NpcActivity::Buying
+                | NpcActivity::Gathering
+                | NpcActivity::Selling
+                | NpcActivity::Working
+                | NpcActivity::AtHome => {
+                    runtime.action_timer_secs -= game_secs;
+                    if runtime.action_timer_secs > 0.0 {
+                        continue;
+                    }
+                    let finished = runtime.activity;
+                    // Apply stock changes when leaving a productive/consumer activity.
+                    match finished {
+                        NpcActivity::Buying => {
+                            if let (Some(ti), Some(want)) =
+                                (runtime.dest_building, primary_buy_good(&snap.needs))
+                            {
+                                if let Some(b) = buildings.buildings.get_mut(ti) {
+                                    if let Some(good) = b.good_for_need(want) {
+                                        b.adjust_stock(good, NPC_STOCK_BUY);
+                                    }
+                                }
+                            }
+                        }
+                        NpcActivity::Gathering | NpcActivity::Working => {
+                            if let Some(hi) = snap.home {
+                                if let Some(b) = buildings.buildings.get_mut(hi) {
+                                    for need in &snap.needs {
+                                        if need.intent == NeedIntent::Sell {
+                                            b.adjust_stock(need.good, NPC_STOCK_PRODUCE);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        NpcActivity::Selling => {
+                            if let Some(ti) = runtime.dest_building {
+                                if let Some(b) = buildings.buildings.get_mut(ti) {
+                                    for need in &snap.needs {
+                                        if need.intent == NeedIntent::Sell {
+                                            b.adjust_stock(need.good, NPC_STOCK_PRODUCE);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    match finished {
+                        NpcActivity::Buying | NpcActivity::Selling => {
+                            runtime.activity = NpcActivity::TravelHome;
+                            runtime.action_timer_secs = 0.0;
+                        }
+                        NpcActivity::Gathering
+                            if runtime.dest_building.is_some()
+                                && runtime.dest_building != snap.home =>
+                        {
+                            runtime.activity = NpcActivity::TravelHome;
+                            runtime.action_timer_secs = 0.0;
+                        }
+                        NpcActivity::Gathering | NpcActivity::Working | NpcActivity::AtHome => {
+                            // Alternate rest ↔ work when staying home, then try supply trip.
+                            if finished == NpcActivity::AtHome {
+                                runtime.activity = activity_at_home(&snap.role);
+                                runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                                if matches!(
+                                    runtime.activity,
+                                    NpcActivity::Working | NpcActivity::Gathering
+                                ) {
+                                    // next cycle after work will seek supply
+                                }
+                            } else if let Some(ti) = find_supply_building(
+                                buildings,
+                                snap.settlement_index,
+                                snap.home,
+                                &snap.needs,
+                            ) {
+                                runtime.dest_building = Some(ti);
+                                runtime.activity = NpcActivity::TravelToSupply;
+                                runtime.action_timer_secs = 0.0;
+                            } else {
+                                // No supply with stock — flip between home activities.
+                                runtime.activity = if finished == NpcActivity::Working
+                                    || finished == NpcActivity::Gathering
+                                {
+                                    NpcActivity::AtHome
+                                } else {
+                                    activity_at_home(&snap.role)
+                                };
+                                runtime.dest_building = snap.home;
+                                runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn set_player_district(&mut self, district_index: usize) {
@@ -626,6 +941,7 @@ impl MapSession {
     pub(crate) fn update_visited_places(&mut self) -> bool {
         let Some(pos) = self.player_pos else {
             self.player_area = None;
+            self.npc_runtimes.clear();
             return false;
         };
         let mut changed = false;
@@ -640,6 +956,7 @@ impl MapSession {
             }
         } else {
             self.player_area = None;
+            self.npc_runtimes.clear();
             return false;
         }
         self.sync_player_area();
@@ -948,6 +1265,7 @@ impl MapSession {
             self.grid = Some(view.grid);
             self.settlements = Some(result.settlements);
             self.npcs = Some(result.npcs);
+            self.buildings = Some(result.buildings);
             self.habitat = view.habitat;
             self.life = view.life;
             self.lod = result.lod;
@@ -967,6 +1285,7 @@ impl MapSession {
         if !self.loading && self.player_spawn.is_some() {
             let game_secs = self.game.tick(dt);
             self.advance_movement(game_secs);
+            self.advance_npc_runtimes(game_secs);
         }
     }
 
@@ -1381,9 +1700,12 @@ fn generate_job(req: GenRequest) -> GenResult {
     let settlements = req
         .settlements
         .unwrap_or_else(|| generate_settlements_sampled(&sampler));
+    let buildings = req
+        .buildings
+        .unwrap_or_else(|| generate_buildings(req.seed, &settlements.settlements));
     let npcs = req
         .npcs
-        .unwrap_or_else(|| generate_npcs(req.seed, &settlements.settlements));
+        .unwrap_or_else(|| generate_npcs(req.seed, &settlements.settlements, &buildings));
 
     let (grid, habitat, life) = match req.lod {
         LodLevel::Global => (generate_global_grid_sampled(&sampler), None, None),
@@ -1418,6 +1740,7 @@ fn generate_job(req: GenRequest) -> GenResult {
         grid,
         settlements,
         npcs,
+        buildings,
         habitat,
         life,
     }

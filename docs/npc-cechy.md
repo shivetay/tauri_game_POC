@@ -11,18 +11,20 @@ Dokument opisuje to, co jest wdrożone w kodzie, oraz kolejne kroki i sugestie. 
 - Umiejętności: co najmniej trzy wpisy `NpcSkill` (`SkillId` + poziom 0–100), zestaw zależny od zawodu.
 - Cienkie API decyzji: `Npc::inclination(DecisionKind) -> f32` w `[0, 1]` wyłącznie z cech (bez reputacji i stanu sesji).
 - `DecisionKind`: `HelpStranger`, `OfferTrade`, `ShareLocalInfo`, `TakeRisk`.
-- Panel osady (przed spawnem) pokazuje podgląd: imię, zawód, cel, intelekt, ambicja (`Npc::preview_line`).
-- Po spawnie, gdy gracz stoi w osadzie: panel **Lokalizacja** z listą NPC bieżącego obszaru oraz przełączaniem dzielnic (tylko UI, bez ruchu markera).
-- Kod: `src-tauri/src/world/npc.rs`, sesja `player_area` w `session.rs`, UI w `src-tauri/src/app.rs`.
+- Potrzeby z roli (`needs`: Buy/Sell + Good) oraz minimalny `personal_stock` dla Sell.
+- Przypisanie do budynku (`home_building_index`) i cel zaopatrzenia (`supply_target_index` ≠ home).
+- W osadzie gracza: symulacja ruchu w sesji (prędkość offroad jak gracz, `2` WU/h) oraz statusy (`w drodze`, `kupuje`, `zbiera`, `sprzedaje`, `pracuje`, `w domu`) — **bez** markerów na mapie.
+- Panel Lokalizacja: podgląd domu, celu i statusu; budynki: [budynki-stan.md](./budynki-stan.md).
+- Kod: `src-tauri/src/world/npc.rs`, sesja `npc_runtimes` w `session.rs`, UI w `src-tauri/src/app.rs`.
 
-## Czego etap 1 świadomie nie robi
+## Czego świadomie nie robi
 
 - Dialogu, handlu, zleceń ani questów w grze.
-- Fizycznego przechodzenia między dzielnicami (centroid / ścieżka w mieście).
-- Harmonogramów, ruchu NPC po mapie ani frakcji.
+- Markerów NPC na teksturze mapy.
+- Zużycia zapasów w czasie.
+- Harmonogramów ani frakcji.
 - Relacji z graczem zapisanych w sesji.
 - Wpływu reputacji / historii postaci na `inclination`.
-- Powiązania zawodu z budynkami (patrz [profesje-budynki.md](./profesje-budynki.md)).
 
 ## Dalsze kroki rozwoju
 

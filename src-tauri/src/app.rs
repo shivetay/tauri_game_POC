@@ -8,7 +8,7 @@ use crate::game_time::{GameTime, SkyBody, SPEED_MULTIPLIERS};
 use crate::render::{compose_map_rgba, BordersOverlay, ComposeInput};
 use crate::session::{
     biome_label, cell_world_at_pixel, format_pop, is_land_biome, player_at, MapSession,
-    Cardinal, LodLevel, VISION_RADIUS,
+    Cardinal, LocalAreaTab, LodLevel, VISION_RADIUS,
 };
 use crate::settlements_draw::{
     district_info, format_settlement_label, hit_settlement, road_info, settlement_info,
@@ -194,6 +194,7 @@ impl MapApp {
                             ui.label(RichText::new("Brak podziału na dzielnice.").small());
                             ui.add_space(4.0);
                             ui.label(RichText::new("NPC").small().strong());
+                            let buildings = self.session.buildings.as_ref();
                             let roster = self
                                 .session.npcs
                                 .as_ref()
@@ -203,7 +204,11 @@ impl MapApp {
                                 ui.label(RichText::new("Brak NPC.").small());
                             } else {
                                 for npc in roster {
-                                    ui.label(RichText::new(npc.preview_line()).small());
+                                    let line = match buildings {
+                                        Some(b) => npc.preview_line(b, None),
+                                        None => format!("{} — {}", npc.name, npc.role),
+                                    };
+                                    ui.label(RichText::new(line).small());
                                 }
                             }
                         } else {
@@ -236,6 +241,7 @@ impl MapApp {
                             if let Some(di) = selected_di {
                                 ui.add_space(4.0);
                                 ui.label(RichText::new("NPC").small().strong());
+                                let buildings = self.session.buildings.as_ref();
                                 let roster = self
                                     .session.npcs
                                     .as_ref()
@@ -245,7 +251,11 @@ impl MapApp {
                                     ui.label(RichText::new("Brak NPC.").small());
                                 } else {
                                     for npc in roster {
-                                        ui.label(RichText::new(npc.preview_line()).small());
+                                        let line = match buildings {
+                                            Some(b) => npc.preview_line(b, None),
+                                            None => format!("{} — {}", npc.name, npc.role),
+                                        };
+                                        ui.label(RichText::new(line).small());
                                     }
                                 }
                             }
@@ -320,26 +330,95 @@ impl MapApp {
         }
 
         ui.add_space(4.0);
-        ui.label(RichText::new("NPC").small().strong());
-        let roster = match area.district_index {
-            Some(di) => self
-                .session
-                .npcs
-                .as_ref()
-                .map(|m| m.in_district(area.settlement_index, di))
-                .unwrap_or(&[]),
-            None => self
-                .session
-                .npcs
-                .as_ref()
-                .map(|m| m.in_settlement(area.settlement_index))
-                .unwrap_or(&[]),
-        };
-        if roster.is_empty() {
-            ui.label(RichText::new("Brak NPC.").small());
-        } else {
-            for npc in roster {
-                ui.label(RichText::new(npc.preview_line()).small());
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(
+                    self.session.local_area_tab == LocalAreaTab::Npcs,
+                    RichText::new("NPC").small(),
+                )
+                .clicked()
+            {
+                self.session.local_area_tab = LocalAreaTab::Npcs;
+            }
+            if ui
+                .selectable_label(
+                    self.session.local_area_tab == LocalAreaTab::Buildings,
+                    RichText::new("Budynki").small(),
+                )
+                .clicked()
+            {
+                self.session.local_area_tab = LocalAreaTab::Buildings;
+            }
+        });
+        ui.add_space(4.0);
+
+        match self.session.local_area_tab {
+            LocalAreaTab::Npcs => {
+                let buildings = self.session.buildings.as_ref();
+                if let Some(npc_map) = self.session.npcs.as_ref() {
+                    let mut shown = 0usize;
+                    for (i, npc) in npc_map.npcs.iter().enumerate() {
+                        if npc.settlement_index != area.settlement_index {
+                            continue;
+                        }
+                        if let Some(di) = area.district_index {
+                            if npc.district_index != di {
+                                continue;
+                            }
+                        }
+                        shown += 1;
+                        let supply = self.session.npc_supply_dest(i);
+                        let mut line = match buildings {
+                            Some(b) => npc.preview_line(b, supply),
+                            None => format!("{} — {}", npc.name, npc.role),
+                        };
+                        if let Some(act) = self.session.npc_activity(i) {
+                            line.push_str(" · ");
+                            line.push_str(act.label());
+                        }
+                        ui.label(RichText::new(line).small());
+                    }
+                    if shown == 0 {
+                        ui.label(RichText::new("Brak NPC.").small());
+                    }
+                } else {
+                    ui.label(RichText::new("Brak NPC.").small());
+                }
+            }
+            LocalAreaTab::Buildings => {
+                let roster = match area.district_index {
+                    Some(di) => self
+                        .session
+                        .buildings
+                        .as_ref()
+                        .map(|m| m.in_district(area.settlement_index, di))
+                        .unwrap_or(&[]),
+                    None => self
+                        .session
+                        .buildings
+                        .as_ref()
+                        .map(|m| m.in_settlement(area.settlement_index))
+                        .unwrap_or(&[]),
+                };
+                if roster.is_empty() {
+                    ui.label(RichText::new("Brak budynków.").small());
+                } else {
+                    for b in roster {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(b.title_line()).small());
+                            if let Some(stock) = b.stock_label() {
+                                ui.label(
+                                    RichText::new(format!("[{stock}]"))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
+                        if let Some(needs) = b.needs_label() {
+                            ui.label(RichText::new(needs).small().weak());
+                        }
+                    }
+                }
             }
         }
     }
