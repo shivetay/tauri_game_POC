@@ -4,12 +4,16 @@ use crate::world::building::{
     BuildingKind, BuildingMap, BuildingNeed, BuildingStock, Good, NeedIntent,
 };
 use crate::world::prng::unit_noise;
-use crate::world::settlement::{DistrictKind, Settlement, SettlementKind};
+use crate::world::settlement::{
+    settlement_road_graph, DistrictKind, Road, Settlement, SettlementKind,
+};
 
 /// Dedicated PRNG channel — do not reuse settlement layout/name channels.
 const CHANNEL_NPC: u64 = 49;
 /// Trait / appearance / skill rolls — must not overlap name/role/count channels (0..2).
 const CHANNEL_TRAITS: u64 = CHANNEL_NPC + 10;
+/// Nearby-settlement knowledge rolls — must not overlap trait slots.
+const CHANNEL_KNOWLEDGE: u64 = CHANNEL_NPC + 40;
 
 /// Sentinel district index for settlement-wide NPCs (no districts).
 const SETTLEMENT_WIDE_DI: usize = 0;
@@ -94,7 +98,7 @@ pub enum DecisionKind {
     TakeRisk,
 }
 
-/// Session activity while the NPC is simulated in the player's settlement.
+/// Session activity for local and inter-settlement NPC simulation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NpcActivity {
     AtHome,
@@ -104,6 +108,14 @@ pub enum NpcActivity {
     Selling,
     TravelHome,
     Working,
+    /// Asking another local NPC for a known settlement.
+    SeekingInfo,
+    /// Abstract road travel toward a remote settlement.
+    TravelRemote,
+    /// Temporary stay at a remote supply building.
+    AtRemote,
+    /// Abstract road travel back to home settlement.
+    ReturnRemote,
 }
 
 impl NpcActivity {
@@ -116,6 +128,10 @@ impl NpcActivity {
             NpcActivity::Selling => "sprzedaje",
             NpcActivity::TravelHome => "wraca do domu",
             NpcActivity::Working => "pracuje",
+            NpcActivity::SeekingInfo => "pyta o drogę",
+            NpcActivity::TravelRemote => "w drodze (inna osada)",
+            NpcActivity::AtRemote => "w innej osadzie",
+            NpcActivity::ReturnRemote => "wraca z podróży",
         }
     }
 }
@@ -168,6 +184,8 @@ pub struct Npc {
     pub home_building_index: Option<usize>,
     /// Other building in the same settlement that sells a needed good (logical only).
     pub supply_target_index: Option<usize>,
+    /// Seed-known nearby settlements (road neighbors, 1 hop, max 3).
+    pub known_settlement_indices: Vec<usize>,
 }
 
 impl Npc {
@@ -274,8 +292,14 @@ impl NpcMap {
 }
 
 /// Seed-stable NPC roster: per district, or settlement-wide when no districts.
-/// Assigns each NPC to a home building and a logical supply target (≠ home).
-pub fn generate(seed: u64, settlements: &[Settlement], buildings: &BuildingMap) -> NpcMap {
+/// Assigns each NPC to a home building, supply target, and nearby known settlements.
+pub fn generate(
+    seed: u64,
+    settlements: &[Settlement],
+    roads: &[Road],
+    buildings: &BuildingMap,
+) -> NpcMap {
+    let road_adj = settlement_road_graph(settlements, roads);
     let mut npcs = Vec::new();
     for (si, settlement) in settlements.iter().enumerate() {
         if settlement.districts.is_empty() {
@@ -293,6 +317,7 @@ pub fn generate(seed: u64, settlements: &[Settlement], buildings: &BuildingMap) 
                     si,
                     SETTLEMENT_WIDE_DI,
                     buildings,
+                    &road_adj,
                 ));
             }
             continue;
@@ -311,6 +336,7 @@ pub fn generate(seed: u64, settlements: &[Settlement], buildings: &BuildingMap) 
                     si,
                     di,
                     buildings,
+                    &road_adj,
                 ));
             }
         }
@@ -326,6 +352,7 @@ fn build_npc(
     settlement_index: usize,
     district_index: usize,
     buildings: &BuildingMap,
+    road_adj: &[Vec<(usize, f32)>],
 ) -> Npc {
     let needs = needs_for_role(&role);
     let personal_stock = roll_personal_stock(seed, key, &needs);
@@ -333,6 +360,8 @@ fn build_npc(
         assign_home(buildings, settlement_index, district_index, &role, seed, key);
     let supply_target_index =
         assign_supply_target(buildings, settlement_index, home_building_index, &needs);
+    let known_settlement_indices =
+        assign_known_settlements(seed, key, settlement_index, road_adj);
     Npc {
         name,
         role: role.clone(),
@@ -352,7 +381,44 @@ fn build_npc(
         personal_stock,
         home_building_index,
         supply_target_index,
+        known_settlement_indices,
     }
+}
+
+/// Deterministic 1-hop road neighbors: 1..=3 known settlements (or fewer if isolated).
+fn assign_known_settlements(
+    seed: u64,
+    key: u64,
+    home: usize,
+    road_adj: &[Vec<(usize, f32)>],
+) -> Vec<usize> {
+    let Some(edges) = road_adj.get(home) else {
+        return Vec::new();
+    };
+    let mut neighbors: Vec<usize> = edges.iter().map(|(i, _)| *i).collect();
+    neighbors.sort_unstable();
+    neighbors.dedup();
+    neighbors.retain(|&i| i != home);
+    if neighbors.is_empty() {
+        return Vec::new();
+    }
+    let max_n = neighbors.len().min(3);
+    let count = 1
+        + ((unit_noise(seed, CHANNEL_KNOWLEDGE, key) * max_n as f64).floor() as usize)
+            .min(max_n.saturating_sub(1));
+    // Stable shuffle via noise ranks, then take `count`.
+    let mut ranked: Vec<(u64, usize)> = neighbors
+        .into_iter()
+        .enumerate()
+        .map(|(i, si)| {
+            let rank = (unit_noise(seed, CHANNEL_KNOWLEDGE + 1, key.wrapping_add(i as u64 + 1))
+                * 1_000_000.0)
+                .floor() as u64;
+            (rank, si)
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().take(count).map(|(_, si)| si).collect()
 }
 
 fn needs_for_role(role: &str) -> Vec<BuildingNeed> {
@@ -524,6 +590,25 @@ pub fn find_supply_building(
         }
         Some(i)
     })
+}
+
+/// First known remote settlement (≠ home) that has a building stocking a Buy need.
+/// Returns `(settlement_index, building_index)`.
+pub fn find_remote_supply(
+    buildings: &BuildingMap,
+    known: &[usize],
+    home_settlement: usize,
+    needs: &[BuildingNeed],
+) -> Option<(usize, usize)> {
+    for &si in known {
+        if si == home_settlement {
+            continue;
+        }
+        if let Some(bi) = find_supply_building(buildings, si, None, needs) {
+            return Some((si, bi));
+        }
+    }
+    None
 }
 
 fn assign_supply_target(
@@ -723,7 +808,7 @@ mod tests {
             ..WorldConfig::default()
         });
         let buildings = generate_buildings(6, &map.settlements);
-        let npcs = generate(6, &map.settlements, &buildings);
+        let npcs = generate(6, &map.settlements, &map.roads, &buildings);
         (npcs, buildings)
     }
 
@@ -734,8 +819,8 @@ mod tests {
             ..WorldConfig::default()
         });
         let buildings = generate_buildings(6, &map.settlements);
-        let a = generate(6, &map.settlements, &buildings);
-        let b = generate(6, &map.settlements, &buildings);
+        let a = generate(6, &map.settlements, &map.roads, &buildings);
+        let b = generate(6, &map.settlements, &map.roads, &buildings);
         assert_eq!(a.npcs.len(), b.npcs.len());
         for (x, y) in a.npcs.iter().zip(b.npcs.iter()) {
             assert_eq!(x.name, y.name);
@@ -753,6 +838,7 @@ mod tests {
             assert_eq!(x.appearance, y.appearance);
             assert_eq!(x.home_building_index, y.home_building_index);
             assert_eq!(x.supply_target_index, y.supply_target_index);
+            assert_eq!(x.known_settlement_indices, y.known_settlement_indices);
             assert_eq!(x.needs, y.needs);
             assert_eq!(x.personal_stock, y.personal_stock);
             assert_eq!(x.skills.len(), y.skills.len());
@@ -775,8 +861,8 @@ mod tests {
         });
         let a_b = generate_buildings(6, &a_map.settlements);
         let b_b = generate_buildings(7, &b_map.settlements);
-        let a = generate(6, &a_map.settlements, &a_b);
-        let b = generate(7, &b_map.settlements, &b_b);
+        let a = generate(6, &a_map.settlements, &a_map.roads, &a_b);
+        let b = generate(7, &b_map.settlements, &b_map.roads, &b_b);
         assert!(
             a.npcs.len() != b.npcs.len()
                 || a.npcs
@@ -793,7 +879,7 @@ mod tests {
             ..WorldConfig::default()
         });
         let buildings = generate_buildings(6, &map.settlements);
-        let npcs = generate(6, &map.settlements, &buildings);
+        let npcs = generate(6, &map.settlements, &map.roads, &buildings);
         let mut found = false;
         for (si, s) in map.settlements.iter().enumerate() {
             if s.districts.is_empty() {
@@ -817,7 +903,7 @@ mod tests {
             ..WorldConfig::default()
         });
         let buildings = generate_buildings(6, &map.settlements);
-        let npcs = generate(6, &map.settlements, &buildings);
+        let npcs = generate(6, &map.settlements, &map.roads, &buildings);
         let Some((si, _)) = map
             .settlements
             .iter()
@@ -832,6 +918,37 @@ mod tests {
         assert!(slice
             .iter()
             .all(|n| n.settlement_index == si && n.district_index == di));
+    }
+
+    #[test]
+    fn known_settlements_are_road_neighbors() {
+        let map = generate_settlements(WorldConfig {
+            seed: 6,
+            ..WorldConfig::default()
+        });
+        let buildings = generate_buildings(6, &map.settlements);
+        let npcs = generate(6, &map.settlements, &map.roads, &buildings);
+        let adj = settlement_road_graph(&map.settlements, &map.roads);
+        for n in &npcs.npcs {
+            assert!(n.known_settlement_indices.len() <= 3);
+            let home = n.settlement_index;
+            let neighbors: Vec<usize> = adj
+                .get(home)
+                .map(|e| {
+                    let mut v: Vec<_> = e.iter().map(|(i, _)| *i).collect();
+                    v.sort_unstable();
+                    v.dedup();
+                    v
+                })
+                .unwrap_or_default();
+            for &k in &n.known_settlement_indices {
+                assert_ne!(k, home);
+                assert!(
+                    neighbors.contains(&k),
+                    "known {k} must be a road neighbor of {home}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -898,8 +1015,8 @@ mod tests {
             ..WorldConfig::default()
         });
         let buildings = generate_buildings(6, &map.settlements);
-        let a = generate(6, &map.settlements, &buildings);
-        let b = generate(6, &map.settlements, &buildings);
+        let a = generate(6, &map.settlements, &map.roads, &buildings);
+        let b = generate(6, &map.settlements, &map.roads, &buildings);
         let kinds = [
             DecisionKind::HelpStranger,
             DecisionKind::OfferTrade,
@@ -928,8 +1045,8 @@ mod tests {
         });
         let a_b = generate_buildings(6, &a_map.settlements);
         let b_b = generate_buildings(7, &b_map.settlements);
-        let a = generate(6, &a_map.settlements, &a_b);
-        let b = generate(7, &b_map.settlements, &b_b);
+        let a = generate(6, &a_map.settlements, &a_map.roads, &a_b);
+        let b = generate(7, &b_map.settlements, &b_map.roads, &b_b);
         let changed = a.npcs.iter().zip(b.npcs.iter()).any(|(x, y)| {
             (x.inclination(DecisionKind::HelpStranger)
                 - y.inclination(DecisionKind::HelpStranger))

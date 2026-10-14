@@ -25,12 +25,13 @@ use crate::world::sampler::TerrainSampler;
 use crate::world::building::{generate as generate_buildings, BuildingMap};
 use crate::world::building::NeedIntent;
 use crate::world::npc::{
-    activity_at_home, activity_at_supply, find_supply_building, generate as generate_npcs,
-    primary_buy_good, NpcActivity, NpcMap,
+    activity_at_home, activity_at_supply, find_remote_supply, find_supply_building,
+    generate as generate_npcs, primary_buy_good, DecisionKind, NpcActivity, NpcMap,
 };
+use crate::world::prng::unit_noise;
 use crate::world::settlement::{
-    generate_sampled as generate_settlements_sampled, Road, RoadKind, Settlement, SettlementKind,
-    SettlementMap,
+    generate_sampled as generate_settlements_sampled, settlement_road_distance,
+    settlement_road_graph, Road, RoadKind, Settlement, SettlementKind, SettlementMap,
 };
 use crate::world::types::{ChunkId, RegionId, TerrainGrid, TileType};
 
@@ -66,7 +67,7 @@ pub(crate) enum LocalAreaTab {
     Buildings,
 }
 
-/// In-settlement NPC simulation (logical movement; no map markers).
+/// Global NPC simulation (local detail near player; abstract road hops elsewhere).
 #[derive(Debug, Clone)]
 pub(crate) struct NpcRuntime {
     pub npc_index: usize,
@@ -77,14 +78,27 @@ pub(crate) struct NpcRuntime {
     pub dest_building: Option<usize>,
     /// Remaining game-seconds for stationary activities.
     pub action_timer_secs: f64,
+    /// Settlement the NPC is currently in (home while local; remote while away).
+    pub location_settlement: usize,
+    /// Seed knowledge plus settlements learned via SeekingInfo.
+    pub known_settlements: Vec<usize>,
+    /// Remote settlement targeted by TravelRemote / AtRemote / ReturnRemote.
+    pub remote_settlement: Option<usize>,
+    /// Remaining abstract road distance (WU) for TravelRemote / ReturnRemote.
+    pub travel_remaining_wu: f32,
+    /// Deterministic ask-event counter for ShareLocalInfo rolls.
+    pub ask_event_count: u32,
 }
 
 /// Dwell time at a building before the next transition (game seconds).
 /// Kept short so ×1 playback shows status changes within a few real seconds.
 const NPC_ACTION_GAME_SECS: f64 = 3.0 * 60.0;
 const NPC_HOME_DWELL_GAME_SECS: f64 = 2.0 * 60.0;
+const NPC_SEEK_INFO_GAME_SECS: f64 = 2.0 * 60.0;
 const NPC_STOCK_BUY: i16 = -1;
 const NPC_STOCK_PRODUCE: i16 = 1;
+/// PRNG channel for NPC ask rolls (session-side; distinct from world channels).
+const CHANNEL_NPC_ASK: u64 = 149;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cardinal {
@@ -292,8 +306,10 @@ pub struct MapSession {
     pub(crate) player_area: Option<PlayerArea>,
     /// NPC vs buildings list in the local-area panel.
     pub(crate) local_area_tab: LocalAreaTab,
-    /// Live NPC positions/activities for the settlement under the player.
+    /// Live NPC positions/activities for all NPCs (background + local detail).
     pub(crate) npc_runtimes: Vec<NpcRuntime>,
+    /// Cached settlement↔road adjacency for abstract NPC travel ETAs.
+    settlement_road_adj: Vec<Vec<(usize, f32)>>,
     /// Remaining walk waypoints (first = current leg target). Prefer road network.
     pub(crate) move_path: Vec<(f32, f32)>,
     terrain: Option<TerrainSampler>,
@@ -350,6 +366,7 @@ impl MapSession {
             player_area: None,
             local_area_tab: LocalAreaTab::Npcs,
             npc_runtimes: Vec::new(),
+            settlement_road_adj: Vec::new(),
             move_path: Vec::new(),
             terrain: None,
             known_places: HashSet::new(),
@@ -632,10 +649,8 @@ impl MapSession {
     pub(crate) fn sync_player_area(&mut self) {
         let Some(si) = self.settlement_at_player() else {
             self.player_area = None;
-            self.npc_runtimes.clear();
             return;
         };
-        let prev_si = self.player_area.map(|a| a.settlement_index);
         let has_districts = self
             .settlements
             .as_ref()
@@ -655,12 +670,20 @@ impl MapSession {
             settlement_index: si,
             district_index,
         });
-        if prev_si != Some(si) || self.npc_runtimes.is_empty() {
-            self.rebuild_npc_runtimes(si);
+        if self.npc_runtimes.is_empty() {
+            self.rebuild_all_npc_runtimes();
         }
     }
 
-    pub(crate) fn rebuild_npc_runtimes(&mut self, settlement_index: usize) {
+    fn refresh_settlement_road_adj(&mut self) {
+        self.settlement_road_adj = match &self.settlements {
+            Some(m) => settlement_road_graph(&m.settlements, &m.roads),
+            None => Vec::new(),
+        };
+    }
+
+    /// Rebuild runtimes for every NPC (call when the NPC map is replaced).
+    pub(crate) fn rebuild_all_npc_runtimes(&mut self) {
         self.npc_runtimes.clear();
         let Some(npcs) = self.npcs.as_ref() else {
             return;
@@ -669,9 +692,6 @@ impl MapSession {
             return;
         };
         for (i, npc) in npcs.npcs.iter().enumerate() {
-            if npc.settlement_index != settlement_index {
-                continue;
-            }
             let (x, y) = npc
                 .home_building_index
                 .and_then(|bi| buildings.buildings.get(bi))
@@ -685,15 +705,44 @@ impl MapSession {
                 activity,
                 dest_building: npc.home_building_index,
                 action_timer_secs: NPC_HOME_DWELL_GAME_SECS,
+                location_settlement: npc.settlement_index,
+                known_settlements: npc.known_settlement_indices.clone(),
+                remote_settlement: None,
+                travel_remaining_wu: 0.0,
+                ask_event_count: 0,
             });
         }
     }
 
-    pub(crate) fn npc_activity(&self, npc_index: usize) -> Option<NpcActivity> {
-        self.npc_runtimes
-            .iter()
-            .find(|r| r.npc_index == npc_index)
-            .map(|r| r.activity)
+    /// Status text for the Lokalizacja list (includes remote destination names).
+    pub(crate) fn npc_status_label(&self, npc_index: usize) -> Option<String> {
+        let runtime = self.npc_runtimes.iter().find(|r| r.npc_index == npc_index)?;
+        let name_of = |si: usize| -> String {
+            self.settlements
+                .as_ref()
+                .and_then(|m| m.settlements.get(si))
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("#{si}"))
+        };
+        Some(match runtime.activity {
+            NpcActivity::TravelRemote => {
+                let dest = runtime
+                    .remote_settlement
+                    .map(name_of)
+                    .unwrap_or_else(|| "—".into());
+                format!("w drodze do {dest}")
+            }
+            NpcActivity::ReturnRemote => "wraca z podróży".into(),
+            NpcActivity::AtRemote => {
+                let dest = runtime
+                    .remote_settlement
+                    .or(Some(runtime.location_settlement))
+                    .map(name_of)
+                    .unwrap_or_else(|| "—".into());
+                format!("w {dest}")
+            }
+            other => other.label().to_string(),
+        })
     }
 
     /// Live supply destination for UI (`po:`), preferring runtime dest with stock.
@@ -701,7 +750,11 @@ impl MapSession {
         let runtime = self.npc_runtimes.iter().find(|r| r.npc_index == npc_index)?;
         if matches!(
             runtime.activity,
-            NpcActivity::TravelToSupply | NpcActivity::Buying | NpcActivity::Selling
+            NpcActivity::TravelToSupply
+                | NpcActivity::Buying
+                | NpcActivity::Selling
+                | NpcActivity::AtRemote
+                | NpcActivity::TravelRemote
         ) {
             if let Some(d) = runtime.dest_building {
                 return Some(d);
@@ -717,51 +770,225 @@ impl MapSession {
         )
     }
 
-    /// Advance local NPC movement/activities with the same offroad walk speed as the player.
+    /// Advance all NPC activities: abstract road travel globally; local xy in player settlement.
     pub(crate) fn advance_npc_runtimes(&mut self, game_secs: f64) {
         if game_secs <= 0.0 || !game_secs.is_finite() {
             return;
         }
-        let Some(area) = self.player_area else {
+        if self.npc_runtimes.is_empty() {
+            self.rebuild_all_npc_runtimes();
+        }
+        if self.npc_runtimes.is_empty() {
             return;
-        };
-        let Some(npc_map) = self.npcs.as_ref() else {
-            return;
-        };
+        }
+        let player_si = self.player_area.map(|a| a.settlement_index);
+        let seed = self.seed;
+        let road_adj = self.settlement_road_adj.clone();
+
         #[derive(Clone)]
         struct NpcSnap {
             settlement_index: usize,
             role: String,
             home: Option<usize>,
             needs: Vec<crate::world::building::BuildingNeed>,
+            inclination_share: f32,
         }
-        let snaps: Vec<Option<NpcSnap>> = npc_map
+        let Some(npc_map) = self.npcs.as_ref() else {
+            return;
+        };
+        let snaps: Vec<NpcSnap> = npc_map
             .npcs
             .iter()
-            .map(|n| {
-                Some(NpcSnap {
-                    settlement_index: n.settlement_index,
-                    role: n.role.clone(),
-                    home: n.home_building_index,
-                    needs: n.needs.clone(),
-                })
+            .map(|n| NpcSnap {
+                settlement_index: n.settlement_index,
+                role: n.role.clone(),
+                home: n.home_building_index,
+                needs: n.needs.clone(),
+                inclination_share: n.inclination(DecisionKind::ShareLocalInfo),
             })
             .collect();
-        let speed = WALK_OFFROAD_WU_PER_GAME_HOUR / 3600.0;
-        let step = speed * game_secs as f32;
+
+        let known_by_npc: Vec<Vec<usize>> = self
+            .npc_runtimes
+            .iter()
+            .map(|r| r.known_settlements.clone())
+            .collect();
+        let home_by_npc: Vec<usize> = snaps.iter().map(|s| s.settlement_index).collect();
+
+        let offroad_step = (WALK_OFFROAD_WU_PER_GAME_HOUR / 3600.0) * game_secs as f32;
+        let road_step = (WALK_ROAD_WU_PER_GAME_HOUR / 3600.0) * game_secs as f32;
+
         let Some(buildings) = self.buildings.as_mut() else {
             return;
         };
 
         for runtime in &mut self.npc_runtimes {
-            let Some(snap) = snaps.get(runtime.npc_index).and_then(|s| s.as_ref()) else {
+            let Some(snap) = snaps.get(runtime.npc_index) else {
                 continue;
             };
-            if snap.settlement_index != area.settlement_index {
-                continue;
-            }
+            let at_player_home = player_si == Some(snap.settlement_index)
+                && runtime.location_settlement == snap.settlement_index
+                && !matches!(
+                    runtime.activity,
+                    NpcActivity::TravelRemote
+                        | NpcActivity::ReturnRemote
+                        | NpcActivity::AtRemote
+                );
+
             match runtime.activity {
+                NpcActivity::TravelRemote | NpcActivity::ReturnRemote => {
+                    runtime.travel_remaining_wu =
+                        (runtime.travel_remaining_wu - road_step).max(0.0);
+                    if runtime.travel_remaining_wu > 1e-3 {
+                        continue;
+                    }
+                    if runtime.activity == NpcActivity::TravelRemote {
+                        let dest_si = runtime
+                            .remote_settlement
+                            .unwrap_or(runtime.location_settlement);
+                        runtime.location_settlement = dest_si;
+                        runtime.activity = NpcActivity::AtRemote;
+                        runtime.action_timer_secs = NPC_ACTION_GAME_SECS;
+                        if let Some(bi) = runtime.dest_building {
+                            if let Some(b) = buildings.buildings.get(bi) {
+                                runtime.x = b.x;
+                                runtime.y = b.y;
+                            }
+                        }
+                    } else {
+                        runtime.location_settlement = snap.settlement_index;
+                        runtime.remote_settlement = None;
+                        runtime.dest_building = snap.home;
+                        runtime.activity = activity_at_home(&snap.role);
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                        if let Some(hi) = snap.home {
+                            if let Some(b) = buildings.buildings.get(hi) {
+                                runtime.x = b.x;
+                                runtime.y = b.y;
+                            }
+                        }
+                    }
+                }
+                NpcActivity::SeekingInfo => {
+                    runtime.action_timer_secs -= game_secs;
+                    if runtime.action_timer_secs > 0.0 {
+                        continue;
+                    }
+                    let ask_i = runtime.ask_event_count;
+                    runtime.ask_event_count = ask_i.saturating_add(1);
+                    let roll_key = (runtime.npc_index as u64)
+                        .wrapping_mul(1_000_003)
+                        .wrapping_add(ask_i as u64);
+                    let roll = unit_noise(seed, CHANNEL_NPC_ASK, roll_key) as f32;
+
+                    let peers: Vec<usize> = home_by_npc
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, &home)| {
+                            *i != runtime.npc_index && home == snap.settlement_index
+                        })
+                        .map(|(i, _)| i)
+                        .collect();
+                    let learned = if peers.is_empty() {
+                        None
+                    } else {
+                        let pick = ((unit_noise(seed, CHANNEL_NPC_ASK + 1, roll_key)
+                            * peers.len() as f64)
+                            .floor() as usize)
+                            .min(peers.len() - 1);
+                        let informant = peers[pick];
+                        let share = snaps
+                            .get(informant)
+                            .map(|s| s.inclination_share)
+                            .unwrap_or(0.0);
+                        if roll < share {
+                            known_by_npc.get(informant).and_then(|known| {
+                                known.iter().copied().find(|si| {
+                                    *si != snap.settlement_index
+                                        && !runtime.known_settlements.contains(si)
+                                })
+                            })
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(si) = learned {
+                        if !runtime.known_settlements.contains(&si) {
+                            runtime.known_settlements.push(si);
+                        }
+                    }
+                    if let Some((rsi, bi)) = find_remote_supply(
+                        buildings,
+                        &runtime.known_settlements,
+                        snap.settlement_index,
+                        &snap.needs,
+                    ) {
+                        if let Some(dist) =
+                            settlement_road_distance(&road_adj, snap.settlement_index, rsi)
+                        {
+                            runtime.remote_settlement = Some(rsi);
+                            runtime.dest_building = Some(bi);
+                            runtime.travel_remaining_wu = dist;
+                            runtime.activity = NpcActivity::TravelRemote;
+                            runtime.action_timer_secs = 0.0;
+                            continue;
+                        }
+                    }
+                    runtime.activity = activity_at_home(&snap.role);
+                    runtime.dest_building = snap.home;
+                    runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                }
+                NpcActivity::AtRemote => {
+                    runtime.action_timer_secs -= game_secs;
+                    if runtime.action_timer_secs > 0.0 {
+                        continue;
+                    }
+                    if let (Some(ti), Some(want)) =
+                        (runtime.dest_building, primary_buy_good(&snap.needs))
+                    {
+                        if let Some(b) = buildings.buildings.get_mut(ti) {
+                            if let Some(good) = b.good_for_need(want) {
+                                b.adjust_stock(good, NPC_STOCK_BUY);
+                            }
+                        }
+                    }
+                    let from = runtime.location_settlement;
+                    let home_si = snap.settlement_index;
+                    if let Some(dist) = settlement_road_distance(&road_adj, from, home_si) {
+                        runtime.travel_remaining_wu = dist;
+                        runtime.activity = NpcActivity::ReturnRemote;
+                        runtime.action_timer_secs = 0.0;
+                    } else {
+                        runtime.location_settlement = home_si;
+                        runtime.remote_settlement = None;
+                        runtime.activity = activity_at_home(&snap.role);
+                        runtime.dest_building = snap.home;
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                    }
+                }
                 NpcActivity::TravelToSupply => {
+                    if !at_player_home {
+                        let dest = runtime.dest_building.or_else(|| {
+                            find_supply_building(
+                                buildings,
+                                snap.settlement_index,
+                                snap.home,
+                                &snap.needs,
+                            )
+                        });
+                        if let Some(ti) = dest {
+                            runtime.dest_building = Some(ti);
+                            runtime.activity = activity_at_supply(&snap.role, &snap.needs);
+                            runtime.action_timer_secs = NPC_ACTION_GAME_SECS;
+                            if let Some(b) = buildings.buildings.get(ti) {
+                                runtime.x = b.x;
+                                runtime.y = b.y;
+                            }
+                        } else {
+                            start_remote_or_seek(runtime, snap.settlement_index, snap.home, &snap.needs, buildings, &road_adj);
+                        }
+                        continue;
+                    }
                     let dest = runtime.dest_building.or_else(|| {
                         find_supply_building(
                             buildings,
@@ -771,9 +998,7 @@ impl MapSession {
                         )
                     });
                     let Some(ti) = dest else {
-                        runtime.activity = activity_at_home(&snap.role);
-                        runtime.dest_building = snap.home;
-                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                        start_remote_or_seek(runtime, snap.settlement_index, snap.home, &snap.needs, buildings, &road_adj);
                         continue;
                     };
                     runtime.dest_building = Some(ti);
@@ -784,18 +1009,30 @@ impl MapSession {
                     let dx = tx - runtime.x;
                     let dy = ty - runtime.y;
                     let dist = (dx * dx + dy * dy).sqrt();
-                    if dist <= step || dist < 1e-4 {
+                    if dist <= offroad_step || dist < 1e-4 {
                         runtime.x = tx;
                         runtime.y = ty;
                         runtime.activity = activity_at_supply(&snap.role, &snap.needs);
                         runtime.action_timer_secs = NPC_ACTION_GAME_SECS;
                     } else {
-                        let t = step / dist;
+                        let t = offroad_step / dist;
                         runtime.x += dx * t;
                         runtime.y += dy * t;
                     }
                 }
                 NpcActivity::TravelHome => {
+                    if !at_player_home {
+                        if let Some(hi) = snap.home {
+                            if let Some(b) = buildings.buildings.get(hi) {
+                                runtime.x = b.x;
+                                runtime.y = b.y;
+                            }
+                            runtime.dest_building = Some(hi);
+                        }
+                        runtime.activity = activity_at_home(&snap.role);
+                        runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                        continue;
+                    }
                     let Some(hi) = snap.home else {
                         runtime.activity = NpcActivity::AtHome;
                         runtime.dest_building = None;
@@ -810,13 +1047,13 @@ impl MapSession {
                     let dx = hx - runtime.x;
                     let dy = hy - runtime.y;
                     let dist = (dx * dx + dy * dy).sqrt();
-                    if dist <= step || dist < 1e-4 {
+                    if dist <= offroad_step || dist < 1e-4 {
                         runtime.x = hx;
                         runtime.y = hy;
                         runtime.activity = activity_at_home(&snap.role);
                         runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
                     } else {
-                        let t = step / dist;
+                        let t = offroad_step / dist;
                         runtime.x += dx * t;
                         runtime.y += dy * t;
                     }
@@ -831,7 +1068,6 @@ impl MapSession {
                         continue;
                     }
                     let finished = runtime.activity;
-                    // Apply stock changes when leaving a productive/consumer activity.
                     match finished {
                         NpcActivity::Buying => {
                             if let (Some(ti), Some(want)) =
@@ -881,16 +1117,9 @@ impl MapSession {
                             runtime.action_timer_secs = 0.0;
                         }
                         NpcActivity::Gathering | NpcActivity::Working | NpcActivity::AtHome => {
-                            // Alternate rest ↔ work when staying home, then try supply trip.
                             if finished == NpcActivity::AtHome {
                                 runtime.activity = activity_at_home(&snap.role);
                                 runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
-                                if matches!(
-                                    runtime.activity,
-                                    NpcActivity::Working | NpcActivity::Gathering
-                                ) {
-                                    // next cycle after work will seek supply
-                                }
                             } else if let Some(ti) = find_supply_building(
                                 buildings,
                                 snap.settlement_index,
@@ -901,16 +1130,7 @@ impl MapSession {
                                 runtime.activity = NpcActivity::TravelToSupply;
                                 runtime.action_timer_secs = 0.0;
                             } else {
-                                // No supply with stock — flip between home activities.
-                                runtime.activity = if finished == NpcActivity::Working
-                                    || finished == NpcActivity::Gathering
-                                {
-                                    NpcActivity::AtHome
-                                } else {
-                                    activity_at_home(&snap.role)
-                                };
-                                runtime.dest_building = snap.home;
-                                runtime.action_timer_secs = NPC_HOME_DWELL_GAME_SECS;
+                                start_remote_or_seek(runtime, snap.settlement_index, snap.home, &snap.needs, buildings, &road_adj);
                             }
                         }
                         _ => {}
@@ -918,6 +1138,30 @@ impl MapSession {
                 }
             }
         }
+    }
+
+    /// Mark settlements the player is currently standing at as visited.
+    pub(crate) fn update_visited_places(&mut self) -> bool {
+        let Some(pos) = self.player_pos else {
+            self.player_area = None;
+            return false;
+        };
+        let mut changed = false;
+        if let Some(map) = &self.settlements {
+            for s in &map.settlements {
+                let r = s.radius.max(AT_PLACE_EPS);
+                let dx = s.x - pos.0;
+                let dy = s.y - pos.1;
+                if dx * dx + dy * dy <= r * r {
+                    changed |= self.known_places.insert(Self::place_key(s.x, s.y));
+                }
+            }
+        } else {
+            self.player_area = None;
+            return false;
+        }
+        self.sync_player_area();
+        changed
     }
 
     pub(crate) fn set_player_district(&mut self, district_index: usize) {
@@ -935,32 +1179,6 @@ impl MapSession {
             return;
         }
         area.district_index = Some(district_index);
-    }
-
-    /// Mark settlements the player is currently standing at as visited.
-    pub(crate) fn update_visited_places(&mut self) -> bool {
-        let Some(pos) = self.player_pos else {
-            self.player_area = None;
-            self.npc_runtimes.clear();
-            return false;
-        };
-        let mut changed = false;
-        if let Some(map) = &self.settlements {
-            for s in &map.settlements {
-                let r = s.radius.max(AT_PLACE_EPS);
-                let dx = s.x - pos.0;
-                let dy = s.y - pos.1;
-                if dx * dx + dy * dy <= r * r {
-                    changed |= self.known_places.insert(Self::place_key(s.x, s.y));
-                }
-            }
-        } else {
-            self.player_area = None;
-            self.npc_runtimes.clear();
-            return false;
-        }
-        self.sync_player_area();
-        changed
     }
 
     pub(crate) fn clamp_to_world(&self, wx: f32, wy: f32, config: &WorldConfig) -> (f32, f32) {
@@ -1266,6 +1484,17 @@ impl MapSession {
             self.settlements = Some(result.settlements);
             self.npcs = Some(result.npcs);
             self.buildings = Some(result.buildings);
+            self.refresh_settlement_road_adj();
+            // Rebuild NPC runtimes when the roster was regenerated with settlements.
+            if self.npc_runtimes.is_empty()
+                || self
+                    .npcs
+                    .as_ref()
+                    .map(|m| m.npcs.len())
+                    != Some(self.npc_runtimes.len())
+            {
+                self.rebuild_all_npc_runtimes();
+            }
             self.habitat = view.habitat;
             self.life = view.life;
             self.lod = result.lod;
@@ -1292,6 +1521,31 @@ impl MapSession {
     pub(crate) fn known_travel_dests(&self) -> Vec<TravelDest> {
         known_place_dests(&self.settlements, &self.known_places, &self.config())
     }
+}
+
+fn start_remote_or_seek(
+    runtime: &mut NpcRuntime,
+    home_settlement: usize,
+    home_building: Option<usize>,
+    needs: &[crate::world::building::BuildingNeed],
+    buildings: &BuildingMap,
+    road_adj: &[Vec<(usize, f32)>],
+) {
+    if let Some((rsi, bi)) =
+        find_remote_supply(buildings, &runtime.known_settlements, home_settlement, needs)
+    {
+        if let Some(dist) = settlement_road_distance(road_adj, home_settlement, rsi) {
+            runtime.remote_settlement = Some(rsi);
+            runtime.dest_building = Some(bi);
+            runtime.travel_remaining_wu = dist;
+            runtime.activity = NpcActivity::TravelRemote;
+            runtime.action_timer_secs = 0.0;
+            return;
+        }
+    }
+    runtime.activity = NpcActivity::SeekingInfo;
+    runtime.dest_building = home_building;
+    runtime.action_timer_secs = NPC_SEEK_INFO_GAME_SECS;
 }
 
 pub(crate) struct TravelDest {
@@ -1705,7 +1959,14 @@ fn generate_job(req: GenRequest) -> GenResult {
         .unwrap_or_else(|| generate_buildings(req.seed, &settlements.settlements));
     let npcs = req
         .npcs
-        .unwrap_or_else(|| generate_npcs(req.seed, &settlements.settlements, &buildings));
+        .unwrap_or_else(|| {
+            generate_npcs(
+                req.seed,
+                &settlements.settlements,
+                &settlements.roads,
+                &buildings,
+            )
+        });
 
     let (grid, habitat, life) = match req.lod {
         LodLevel::Global => (generate_global_grid_sampled(&sampler), None, None),

@@ -11,8 +11,8 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Deterministyczne generowanie świata z seeda i parametrów; sześć profili kształtu oraz trzy poziomy widoku: świat, region i chunk.
 - Teren, wysokości, biomy, sieć rzek oraz generowane osady z populacją, dzielnicami, drogami i mostami.
 - Warstwy ekologii dla regionów i chunków oraz flora i fauna prezentowane w UI.
-- Postacie niezależne: cechy, skłonności, potrzeby, home/cel zaopatrzenia; w osadzie gracza ruch offroad (jak gracz) i statusy (`kupuje`/`zbiera`/`w drodze`…) w liście — bez markerów na mapie. Szczegóły: [npc-cechy.md](./npc-cechy.md).
-- Po spawnie: panel Lokalizacja (NPC | Budynki), budynki z `(x,y)` i statycznym zapasem Sell obok nazwy. Szczegóły: [budynki-stan.md](./budynki-stan.md).
+- Postacie niezależne: cechy, skłonności, potrzeby, home/cel zaopatrzenia, wiedza o sąsiednich osadach; symulacja tła wszystkich NPC — lokalny ruch offroad, podróż między osadami po grafie dróg, pytanie NPC→NPC o drogę; statusy w liście Lokalizacja — bez markerów na mapie. Szczegóły: [npc-cechy.md](./npc-cechy.md).
+- Po spawnie: panel Lokalizacja (NPC | Budynki), budynki z `(x,y)` i dynamicznym zapasem Sell (także mutacje z podróży między osadami). Szczegóły: [budynki-stan.md](./budynki-stan.md).
 - Wybór miejsca startu i spawn postaci na mapie.
 - Podróż piesza po lądzie, preferowanie grafu dróg, przejście między poziomami LOD, odkrywanie chunków i znanych osad.
 - Zegar gry z pauzą, prędkościami ×1/×10/×60 oraz ręcznym przesunięciem o godzinę; czas podróży aktualizuje pozycję gracza.
@@ -22,7 +22,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 
 ## W trakcie
 
-- Lokalne, niezacommitowane zmiany w `src-tauri/src/world/settlement.rs` dotyczą spójności przebiegu dróg i rejestru mostów.
+- Dalsza praca nad spójnością mostów / przebiegu dróg (osobny wątek generatora; nie blokuje podróży NPC po grafie osad).
 
 ## Jeszcze niezaimplementowane systemy rozgrywki
 
@@ -30,8 +30,8 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Handel, dynamiczna gospodarka, praca, zlecenia i questy.
 - Zapis i wczytywanie stanu sesji.
 - Handel z graczem, markery NPC na mapie.
-- Dialog i zlecenia oparte o skłonności NPC; zapis relacji w sesji.
-- Symulacja zmian populacji, aktywności i harmonogramów NPC, frakcji oraz wydarzeń świata.
+- Dialog gracza z NPC (informator / handel) i zlecenia; zapis relacji w sesji.
+- Trwała migracja populacji, harmonogramy NPC, frakcje oraz wydarzenia świata.
 - Rozgrywkowe delty terenu i infrastruktura gracza.
 - Wpływ pory roku na wygląd mapy (etap 4 z issue #8).
 

@@ -27,12 +27,24 @@ Drogi są grafem łączącym osady, dzielnice i przeprawy. Z mapowego połączen
 - Bezpieczeństwo dróg wpływa na dostępność towarów, ceny i podróże NPC.
 - Budowa, naprawa, blokada i opłaty zmieniają stan sesji; nie przebudowują po cichu bazowej, deterministycznej sieci.
 
+## Stan wdrożenia (kod)
+
+| Obszar | Stan |
+| --- | --- |
+| Generacja polilinii dróg + mosty (seed) | wdrożone |
+| Podróż gracza: preferencja sieci dróg, prędkość on-road `5` WU/h / off-road `2` WU/h | wdrożone |
+| Graf osada↔droga: `settlement_road_graph` / `settlement_road_distance` | wdrożone |
+| Podróż NPC między osadami (abstrakcyjny ETA po grafie, tło) | wdrożone — [npc-cechy.md](./npc-cechy.md) |
+| Koszt/typ drogi wpływający na ETA osobno od długości | brak (ETA = długość / 5 WU/h) |
+| Zlecenia, handel, karawany na trasach | brak |
+| Bezpieczeństwo / naprawy / blokady jako delty sesji | brak |
+
 ## Kolejność wdrażania
 
-1. Zachować deterministyczną generację dróg i poprawne połączenia przez rzeki/mosty.
-2. Udostępnić graf jako wspólną podstawę pathfindingu postaci i przewozu.
+1. Zachować deterministyczną generację dróg i poprawne połączenia przez rzeki/mosty. *(zrobione)*
+2. Udostępnić graf jako wspólną podstawę pathfindingu postaci i ruchu NPC. *(zrobione — gracz: polilinie; NPC między osadami: graf osad)*
 3. Powiązać typ i stan drogi z czasem podróży oraz prostym kosztem.
-4. Użyć istniejących tras w zleceniach, handlu i ruchu NPC.
+4. Użyć istniejących tras w zleceniach i handlu.
 5. Dodać stan bezpieczeństwa, naprawy i blokady jako delty zapisanej sesji.
 6. Rozszerzać transport rzeczny i strategiczne przeprawy dopiero po działaniu handlu lądowego.
 

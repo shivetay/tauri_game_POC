@@ -372,9 +372,9 @@ impl MapApp {
                             Some(b) => npc.preview_line(b, supply),
                             None => format!("{} — {}", npc.name, npc.role),
                         };
-                        if let Some(act) = self.session.npc_activity(i) {
+                        if let Some(status) = self.session.npc_status_label(i) {
                             line.push_str(" · ");
-                            line.push_str(act.label());
+                            line.push_str(&status);
                         }
                         ui.label(RichText::new(line).small());
                     }
