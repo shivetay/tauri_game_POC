@@ -2,7 +2,7 @@
 
 ## Status
 
-To propozycja zawartości gry, nie lista obiektów już generowanych przez kod. Obecny generator osad tworzy ich typ, położenie, drogi i — zależnie od osady — dzielnice; nie generuje jeszcze budynków. Małe osady mogą mieć pustą listę dzielnic.
+Pełna lista poniżej to propozycja zawartości gry. **W kodzie** jest już okrojona, deterministyczna generacja budynków ze statycznymi potrzebami Buy/Sell oraz zakładka Budynki w panelu Lokalizacja — szczegóły: [budynki-stan.md](./budynki-stan.md).
 
 ## Budynki w dzielnicach
 

@@ -27,14 +27,33 @@ NPC zamieniają dane świata w informacje i interakcje. Są mieszkańcami konkre
 - Zlecenia NPC łączą potrzeby osady z podróżą i zasobami biomów.
 - Harmonogramy i symulacja ruchu mogą wpływać na dostępność usług, ale nie są potrzebne do pierwszej pętli.
 
+## Stan wdrożenia (kod)
+
+Szczegóły cech i ruchu: [npc-cechy.md](./npc-cechy.md). Budynki i zapasy: [budynki-stan.md](./budynki-stan.md).
+
+| Obszar | Stan |
+| --- | --- |
+| Imię, rola, osada/dzielnica (seed) | wdrożone |
+| Cechy, `LifeGoal`, wygląd, skills, `inclination` | wdrożone |
+| Home / cel zaopatrzenia, potrzeby, stock | wdrożone |
+| Wiedza o sąsiednich osadach (`known_settlement_indices`) | wdrożone |
+| Symulacja tła: lokalny ruch + wyjazd między osadami po drogach | wdrożone (bez markerów) |
+| NPC→NPC: pytanie o drogę (`ShareLocalInfo`) | wdrożone (tło) |
+| Dialog / handel / zlecenia z graczem | brak |
+| Markery NPC na mapie, trwała migracja | brak |
+| Zapis relacji w sesji / save | brak |
+
 ## Kolejność wdrażania
 
-1. Zachować deterministyczne imiona/role powiązane z osadą i dzielnicą.
-2. Nadać rolom proste, działające funkcje: informator, sprzedawca, zleceniodawca.
+1. Zachować deterministyczne imiona/role powiązane z osadą i dzielnicą. *(zrobione)*
+1a. Cechy liczbowe + API skłonności. *(zrobione)*
+1b. Potrzeby, budynki, lokalny cykl aktywności. *(zrobione)*
+1c. Wiedza o osadach + podróż między miastami w tle + NPC→NPC. *(zrobione)*
+2. Nadać rolom proste, działające funkcje wobec gracza: informator, sprzedawca, zleceniodawca.
 3. Dodać dialog/zlecenie zależne od stanu osady, reputacji i tagów historii postaci.
 4. Zapisywać relacje oraz zakończenie rozmów/zleceń w stanie sesji.
-5. Dodać harmonogramy i przemieszczanie tylko dla aktywnej okolicy.
-6. Dla reszty świata utrzymać agregaty populacji zamiast szczegółowej symulacji każdej osoby.
+5. Markery / widoczny ruch na drodze; opcjonalnie harmonogramy w aktywnej okolicy.
+6. Dla bardzo odległego świata rozważyć agregaty zamiast pełnego ticka każdej osoby (obecnie tick tła jest abstrakcyjny: ETA po grafie, bez polilinii).
 
 ## Minimalny zakres
 

@@ -27,12 +27,19 @@ Osada jest lokalnym centrum życia: skupia mieszkańców, dzielnice, usługi, za
 - Wydarzenia, zasoby biomów i drogi wpływają na dobrobyt oraz dostępność usług.
 - W pierwszym etapie osady pozostają bazowo wygenerowane; populacja, zapasy i struktury rozgrywki to osobny, zapisywany stan.
 
+## Stan wdrożenia (kod)
+
+- Osady z seeda: pozycja, typ, populacja, dzielnice, podejścia drogowe; sieć dróg między osadami.
+- Budynki z potrzebami Buy/Sell i dynamicznym zapasem w sesji — [budynki-stan.md](./budynki-stan.md).
+- NPC w osadzie + podróż między znanymi osadami po grafie dróg — [npc-cechy.md](./npc-cechy.md).
+- Brak: rynku gracza, usług UI poza listą Lokalizacja, praw/frakcji, migracji wielkości osady.
+
 ## Kolejność wdrażania
 
-1. Ustalić stabilne dane osady: pozycja, typ, populacja, dzielnice i połączenia.
-2. Zapewnić, że typ osady i dzielnice pasują do lokalizacji, biomu i wielkości.
+1. Ustalić stabilne dane osady: pozycja, typ, populacja, dzielnice i połączenia. *(zrobione)*
+2. Zapewnić, że typ osady i dzielnice pasują do lokalizacji, biomu i wielkości. *(częściowo — generator)*
 3. Wystawić kilka usług: informacja, odpoczynek, prosty rynek i lokalne zlecenie.
-4. Powiązać rynek z zasobami biomów, zapasami i ruchem po drogach.
+4. Powiązać rynek z zasobami biomów, zapasami i ruchem po drogach. *(zapasy + ruch NPC w tle — bez rynku gracza)*
 5. Dodać lokalne prawa/frakcję, reputację oraz zapis zapasów i wydarzeń.
 6. Wprowadzać migrację i zmianę wielkości/typu osady dopiero po stabilnym ticku symulacji.
 

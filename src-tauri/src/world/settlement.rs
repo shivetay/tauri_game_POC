@@ -150,6 +150,131 @@ pub struct SettlementMap {
     pub territory: TerritoryMap,
 }
 
+/// Max distance from a road endpoint to count as belonging to a settlement (WU).
+const ROAD_ENDPOINT_R: f32 = 12.0;
+
+/// Undirected adjacency: settlement index → `(neighbor_index, road_length_wu)`.
+pub fn settlement_road_graph(
+    settlements: &[Settlement],
+    roads: &[Road],
+) -> Vec<Vec<(usize, f32)>> {
+    let n = settlements.len();
+    let mut adj = vec![Vec::new(); n];
+    for road in roads {
+        if road.points.len() < 2 {
+            continue;
+        }
+        let a = &road.points[0];
+        let b = &road.points[road.points.len() - 1];
+        let Some((ia, _)) = nearest_settlement_for_road(settlements, a.x, a.y) else {
+            continue;
+        };
+        let Some((ib, _)) = nearest_settlement_for_road(settlements, b.x, b.y) else {
+            continue;
+        };
+        if ia == ib {
+            continue;
+        }
+        let mut len = 0.0f32;
+        for w in road.points.windows(2) {
+            len += (dist2(w[0].x, w[0].y, w[1].x, w[1].y)).sqrt();
+        }
+        let cost = len.max(1.0);
+        adj[ia].push((ib, cost));
+        adj[ib].push((ia, cost));
+    }
+    adj
+}
+
+/// Shortest road-network distance between two settlements, if connected.
+pub fn settlement_road_distance(
+    adj: &[Vec<(usize, f32)>],
+    from: usize,
+    to: usize,
+) -> Option<f32> {
+    if from == to {
+        return Some(0.0);
+    }
+    if from >= adj.len() || to >= adj.len() {
+        return None;
+    }
+    let n = adj.len();
+    let mut dist = vec![f32::INFINITY; n];
+    dist[from] = 0.0;
+    let mut heap = BinaryHeap::new();
+    heap.push(SettlementRouteNode {
+        cost: 0.0,
+        idx: from,
+    });
+    while let Some(SettlementRouteNode { cost, idx }) = heap.pop() {
+        if idx == to {
+            return Some(cost);
+        }
+        if cost > dist[idx] {
+            continue;
+        }
+        for &(nb, w) in &adj[idx] {
+            let next = cost + w;
+            if next < dist[nb] {
+                dist[nb] = next;
+                heap.push(SettlementRouteNode {
+                    cost: next,
+                    idx: nb,
+                });
+            }
+        }
+    }
+    None
+}
+
+#[derive(Copy, Clone)]
+struct SettlementRouteNode {
+    cost: f32,
+    idx: usize,
+}
+
+impl Eq for SettlementRouteNode {}
+
+impl PartialEq for SettlementRouteNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.idx == other.idx && self.cost == other.cost
+    }
+}
+
+impl Ord for SettlementRouteNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .cost
+            .partial_cmp(&self.cost)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| self.idx.cmp(&other.idx))
+    }
+}
+
+impl PartialOrd for SettlementRouteNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn nearest_settlement_for_road(
+    settlements: &[Settlement],
+    x: f32,
+    y: f32,
+) -> Option<(usize, f32)> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, s) in settlements.iter().enumerate() {
+        let d = (dist2(x, y, s.x, s.y)).sqrt();
+        if d > ROAD_ENDPOINT_R {
+            continue;
+        }
+        if best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((i, d));
+        }
+    }
+    best
+}
+
 struct Tier {
     kind: SettlementKind,
     pop_min: u32,
