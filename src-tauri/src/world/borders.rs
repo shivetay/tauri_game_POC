@@ -1,16 +1,32 @@
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
 use crate::world::config::LodLevel;
 use crate::world::elevation::is_water_biome;
+use crate::world::goods::Good;
 use crate::world::prng::unit_noise;
 use crate::world::sampler::TerrainSampler;
 use crate::world::settlement::{Road, Settlement, SettlementKind};
 
 /// Dedicated PRNG channel — must not reuse settlement/road/NPC channels.
 const CHANNEL_BORDER: u64 = 50;
+const CHANNEL_REALM_NAME: u64 = 51;
+const CHANNEL_REALM_PROFILE: u64 = 52;
+
+const REALM_NAME_PREFIX: &[&str] = &[
+    "Biało", "Czarno", "Czerwono", "Zielono", "Złoto", "Srebrno", "Nowo", "Staro",
+    "Wielko", "Mało", "Górno", "Dolno", "Leśno", "Polno", "Mokro", "Sucho",
+    "Kamienno", "Piaskowo", "Miodowo", "Słoneczno", "Wietrzno", "Ciemno", "Jasno",
+    "Dziko", "Wilczo", "Orlo", "Sokoło", "Jelenio", "Dębo", "Brzozowo", "Lipowo",
+    "Sosnowo", "Grabowo", "Jasiono", "Ostrowo", "Brzego", "Rzeczno", "Jeziorno",
+];
+
+const REALM_NAME_STEM: &[&str] = &[
+    "landia", "ria", "wia", "pol", "mark", "grad", "inia", "aria", "owie", "heim",
+    "kraina", "ziemia", "góra", "dolina", "brzeg", "las",
+];
 
 const GRID_STEP: f32 = 8.0;
 const ROAD_ENDPOINT_R: f32 = 12.0;
@@ -36,6 +52,156 @@ pub struct CityBorder {
     pub polygon: Vec<BorderPoint>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum GovernmentKind {
+    Monarchy,
+    Principality,
+    CityRepublic,
+    Theocracy,
+    ClanFederation,
+}
+
+impl GovernmentKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Monarchy => "Monarchia",
+            Self::Principality => "Księstwo",
+            Self::CityRepublic => "Republika miejska",
+            Self::Theocracy => "Teokracja",
+            Self::ClanFederation => "Związek klanów",
+        }
+    }
+
+    fn ruler_title(self, seed: u64, realm_id: u64) -> &'static str {
+        match self {
+            Self::Monarchy => {
+                if unit_noise(seed, CHANNEL_REALM_PROFILE + 10, realm_id) < 0.5 {
+                    "Król"
+                } else {
+                    "Królowa"
+                }
+            }
+            Self::Principality => "Książę",
+            Self::CityRepublic => "Konsul",
+            Self::Theocracy => "Hierarcha",
+            Self::ClanFederation => "Wódz",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum CultureKind {
+    Agrarian,
+    Mercantile,
+    Martial,
+    Pastoral,
+    Scholarly,
+}
+
+impl CultureKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Agrarian => "Agrarna",
+            Self::Mercantile => "Kupiecka",
+            Self::Martial => "Wojownicza",
+            Self::Pastoral => "Pasterska",
+            Self::Scholarly => "Uczona",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum ReligionKind {
+    SolarCult,
+    ForestFaith,
+    AncestorRites,
+    SeaChurch,
+    OldGods,
+}
+
+impl ReligionKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SolarCult => "Kult Słońca",
+            Self::ForestFaith => "Wiara leśna",
+            Self::AncestorRites => "Obrzędy przodków",
+            Self::SeaChurch => "Kościół morski",
+            Self::OldGods => "Stare bogi",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum RulerAmbition {
+    ExpandBorders,
+    EnrichTreasury,
+    SecureFaith,
+    DominateTrade,
+    FortifyHomeland,
+}
+
+impl RulerAmbition {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ExpandBorders => "Rozszerzyć granice",
+            Self::EnrichTreasury => "Wzbogacić skarbiec",
+            Self::SecureFaith => "Utrwalić wiarę",
+            Self::DominateTrade => "Zdominować handel",
+            Self::FortifyHomeland => "Ufortyfikować ojczyznę",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum RelationKind {
+    AncientAlliance,
+    BorderFeud,
+    TradePact,
+    Rivalry,
+    ColdPeace,
+}
+
+impl RelationKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AncientAlliance => "Dawny sojusz",
+            Self::BorderFeud => "Spór graniczny",
+            Self::TradePact => "Pakt handlowy",
+            Self::Rivalry => "Rywalizacja",
+            Self::ColdPeace => "Zimny pokój",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmRelation {
+    pub other_realm_id: usize,
+    pub kind: RelationKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmCommodity {
+    pub good: Good,
+    /// Surplus (export) or deficit (import) magnitude.
+    pub amount: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RealmTradeRoute {
+    pub partner_realm_id: usize,
+    pub good: Good,
+    /// `true` = this realm exports the good to the partner.
+    pub exporting: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Realm {
@@ -43,6 +209,36 @@ pub struct Realm {
     pub name: String,
     pub capital_idx: usize,
     pub settlement_idxs: Vec<usize>,
+    pub ruler_name: String,
+    pub government: GovernmentKind,
+    pub culture: CultureKind,
+    pub religion: ReligionKind,
+    pub ambition: RulerAmbition,
+    /// Public renown of the realm, 0..=100.
+    pub fame: u8,
+    /// Estimated military manpower (troops).
+    pub manpower: u32,
+    /// Composite of fame and manpower, 0..=100 (read-only display).
+    pub military_strength: u8,
+    /// Read-only goals derived from government, religion, history, ambition.
+    pub goals: Vec<String>,
+    pub relations: Vec<RealmRelation>,
+    /// Static export list (local surplus).
+    pub exports: Vec<RealmCommodity>,
+    /// Static import list (local deficit).
+    pub imports: Vec<RealmCommodity>,
+    /// Matched trade routes with other realms (read-only).
+    pub trade_routes: Vec<RealmTradeRoute>,
+}
+
+impl Realm {
+    pub fn population(&self, settlements: &[Settlement]) -> u32 {
+        self.settlement_idxs
+            .iter()
+            .filter_map(|&i| settlements.get(i))
+            .map(|s| s.population)
+            .sum()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +259,98 @@ pub struct TerritoryMap {
     pub rows: u32,
     pub step: f32,
     pub owners: Vec<u16>,
+}
+
+/// Rebuild dashed realm border polylines from a (possibly session-mutated) owner raster.
+/// Treats `u16::MAX` as water / unowned. Deterministic for the same owners grid.
+pub fn rebuild_realm_borders_from_owners(territory: &TerritoryMap) -> Vec<RealmBorder> {
+    let cols = territory.cols as usize;
+    let rows = territory.rows as usize;
+    let step = territory.step;
+    if cols == 0 || rows == 0 || step <= 0.0 || territory.owners.len() != cols * rows {
+        return Vec::new();
+    }
+    let owners = &territory.owners;
+    let mut segments: HashMap<(usize, Option<usize>), Vec<[(f32, f32); 2]>> = HashMap::new();
+
+    let push_seg = |map: &mut HashMap<(usize, Option<usize>), Vec<[(f32, f32); 2]>>,
+                    ra: usize,
+                    rb: Option<usize>,
+                    a: (f32, f32),
+                    b: (f32, f32)| {
+        let key = match rb {
+            Some(rb) if ra <= rb => (ra, Some(rb)),
+            Some(rb) => (rb, Some(ra)),
+            None => (ra, None),
+        };
+        map.entry(key).or_default().push([a, b]);
+    };
+
+    for gy in 0..rows {
+        for gx in 0..cols {
+            let idx = gy * cols + gx;
+            let o = owners[idx];
+            if o == u16::MAX {
+                continue;
+            }
+            let ra = o as usize;
+            let x0 = gx as f32 * step;
+            let y0 = gy as f32 * step;
+            let x1 = x0 + step;
+            let y1 = y0 + step;
+
+            if gx + 1 < cols {
+                let n = owners[gy * cols + (gx + 1)];
+                if n == u16::MAX {
+                    push_seg(&mut segments, ra, None, (x1, y0), (x1, y1));
+                } else if n != o {
+                    push_seg(&mut segments, ra, Some(n as usize), (x1, y0), (x1, y1));
+                }
+            } else {
+                push_seg(&mut segments, ra, None, (x1, y0), (x1, y1));
+            }
+
+            if gy + 1 < rows {
+                let n = owners[(gy + 1) * cols + gx];
+                if n == u16::MAX {
+                    push_seg(&mut segments, ra, None, (x0, y1), (x1, y1));
+                } else if n != o {
+                    push_seg(&mut segments, ra, Some(n as usize), (x0, y1), (x1, y1));
+                }
+            } else {
+                push_seg(&mut segments, ra, None, (x0, y1), (x1, y1));
+            }
+
+            if gx == 0 {
+                push_seg(&mut segments, ra, None, (x0, y0), (x0, y1));
+            }
+            if gy == 0 {
+                push_seg(&mut segments, ra, None, (x0, y0), (x1, y0));
+            }
+        }
+    }
+
+    let mut borders = Vec::new();
+    let mut keys: Vec<_> = segments.keys().copied().collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for key in keys {
+        let segs = segments.remove(&key).unwrap_or_default();
+        for poly in chain_segments(&segs) {
+            let simplified = simplify_polyline(&poly, step * 0.35);
+            if simplified.len() < 2 {
+                continue;
+            }
+            borders.push(RealmBorder {
+                realm_a: key.0,
+                realm_b: key.1,
+                polyline: simplified
+                    .into_iter()
+                    .map(|(x, y)| BorderPoint { x, y })
+                    .collect(),
+            });
+        }
+    }
+    borders
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,8 +377,9 @@ pub fn generate(
     }
 
     let city_borders = build_city_borders(seed, sampler, settlements);
-    let realms = build_realms(settlements, roads);
+    let mut realms = build_realms(seed, settlements, roads);
     let (realm_borders, territory) = build_realm_borders(sampler, settlements, &realms);
+    fill_realm_profiles(seed, settlements, &mut realms, &realm_borders);
 
     BorderGen {
         city_borders,
@@ -321,7 +610,41 @@ fn pick_capitals(settlements: &[Settlement]) -> Vec<usize> {
     pool.iter().copied().take(want).collect()
 }
 
-fn build_realms(settlements: &[Settlement], roads: &[Road]) -> Vec<Realm> {
+fn pick_str<'a>(items: &'a [&'a str], seed: u64, channel: u64, index: u64) -> &'a str {
+    let n = items.len().max(1) as f64;
+    let i = (unit_noise(seed, channel, index) * n).floor() as usize;
+    items[i.min(items.len() - 1)]
+}
+
+fn compose_realm_name(seed: u64, realm_id: u64, salt: u64) -> String {
+    let prefix = pick_str(
+        REALM_NAME_PREFIX,
+        seed,
+        CHANNEL_REALM_NAME,
+        realm_id.wrapping_add(salt * 3),
+    );
+    let stem = pick_str(
+        REALM_NAME_STEM,
+        seed,
+        CHANNEL_REALM_NAME + 1,
+        realm_id.wrapping_add(salt * 3 + 1),
+    );
+    format!("{prefix}{stem}")
+}
+
+fn unique_realm_name(seed: u64, realm_id: u64, taken: &mut HashSet<String>) -> String {
+    for salt in 0u64..64 {
+        let name = compose_realm_name(seed, realm_id, salt);
+        if taken.insert(name.clone()) {
+            return name;
+        }
+    }
+    let fallback = format!("{}-{}", compose_realm_name(seed, realm_id, 0), realm_id);
+    taken.insert(fallback.clone());
+    fallback
+}
+
+fn build_realms(seed: u64, settlements: &[Settlement], roads: &[Road]) -> Vec<Realm> {
     let n = settlements.len();
     let adj = build_road_graph(settlements, roads);
     let mut capitals = pick_capitals(settlements);
@@ -414,18 +737,247 @@ fn build_realms(settlements: &[Settlement], roads: &[Road]) -> Vec<Realm> {
         owner[cap] = ci;
     }
 
+    let mut taken: HashSet<String> = settlements.iter().map(|s| s.name.clone()).collect();
     let mut realms = Vec::with_capacity(capitals.len());
     for (ci, &cap) in capitals.iter().enumerate() {
         let mut idxs: Vec<usize> = (0..n).filter(|&i| owner[i] == ci).collect();
         idxs.sort_unstable();
         realms.push(Realm {
             id: ci,
-            name: settlements[cap].name.clone(),
+            name: unique_realm_name(seed, ci as u64, &mut taken),
             capital_idx: cap,
             settlement_idxs: idxs,
+            ruler_name: String::new(),
+            government: GovernmentKind::Monarchy,
+            culture: CultureKind::Agrarian,
+            religion: ReligionKind::AncestorRites,
+            ambition: RulerAmbition::FortifyHomeland,
+            fame: 0,
+            manpower: 0,
+            military_strength: 0,
+            goals: Vec::new(),
+            relations: Vec::new(),
+            exports: Vec::new(),
+            imports: Vec::new(),
+            trade_routes: Vec::new(),
         });
     }
     realms
+}
+
+const RULER_GIVEN: &[&str] = &[
+    "Aldric", "Borna", "Cedrik", "Dobrochna", "Elara", "Gromir", "Helena", "Igor",
+    "Jadwiga", "Kazimierz", "Lechosława", "Mieszko", "Nadia", "Oleg", "Przemysł",
+    "Ragna", "Stanisław", "Tomasz", "Urszula", "Witosława", "Zbigniew", "Żywia",
+];
+
+fn pick_enum_index(seed: u64, channel: u64, index: u64, n: usize) -> usize {
+    let n = n.max(1) as f64;
+    let i = (unit_noise(seed, channel, index) * n).floor() as usize;
+    i.min(n as usize - 1)
+}
+
+fn fill_realm_profiles(
+    seed: u64,
+    settlements: &[Settlement],
+    realms: &mut [Realm],
+    realm_borders: &[RealmBorder],
+) {
+    let mut neighbors: Vec<Vec<usize>> = vec![Vec::new(); realms.len()];
+    for border in realm_borders {
+        let Some(other) = border.realm_b else {
+            continue;
+        };
+        if border.realm_a >= realms.len() || other >= realms.len() {
+            continue;
+        }
+        if !neighbors[border.realm_a].contains(&other) {
+            neighbors[border.realm_a].push(other);
+        }
+        if !neighbors[other].contains(&border.realm_a) {
+            neighbors[other].push(border.realm_a);
+        }
+    }
+    for list in &mut neighbors {
+        list.sort_unstable();
+    }
+
+    for realm in realms.iter_mut() {
+        let rid = realm.id as u64;
+        let government = [
+            GovernmentKind::Monarchy,
+            GovernmentKind::Principality,
+            GovernmentKind::CityRepublic,
+            GovernmentKind::Theocracy,
+            GovernmentKind::ClanFederation,
+        ][pick_enum_index(seed, CHANNEL_REALM_PROFILE, rid, 5)];
+        let culture = [
+            CultureKind::Agrarian,
+            CultureKind::Mercantile,
+            CultureKind::Martial,
+            CultureKind::Pastoral,
+            CultureKind::Scholarly,
+        ][pick_enum_index(seed, CHANNEL_REALM_PROFILE + 1, rid, 5)];
+        let religion = [
+            ReligionKind::SolarCult,
+            ReligionKind::ForestFaith,
+            ReligionKind::AncestorRites,
+            ReligionKind::SeaChurch,
+            ReligionKind::OldGods,
+        ][pick_enum_index(seed, CHANNEL_REALM_PROFILE + 2, rid, 5)];
+        let ambition = [
+            RulerAmbition::ExpandBorders,
+            RulerAmbition::EnrichTreasury,
+            RulerAmbition::SecureFaith,
+            RulerAmbition::DominateTrade,
+            RulerAmbition::FortifyHomeland,
+        ][pick_enum_index(seed, CHANNEL_REALM_PROFILE + 3, rid, 5)];
+
+        let given = pick_str(RULER_GIVEN, seed, CHANNEL_REALM_PROFILE + 4, rid);
+        let title = government.ruler_title(seed, rid);
+        realm.ruler_name = format!("{title} {given}");
+        realm.government = government;
+        realm.culture = culture;
+        realm.religion = religion;
+        realm.ambition = ambition;
+
+        let pop = realm.population(settlements);
+        let mut cities = 0u32;
+        let mut towns = 0u32;
+        let mut walled = 0u32;
+        for &si in &realm.settlement_idxs {
+            let Some(s) = settlements.get(si) else {
+                continue;
+            };
+            match s.kind {
+                SettlementKind::City => cities += 1,
+                SettlementKind::Town => towns += 1,
+                _ => {}
+            }
+            if s.walled {
+                walled += 1;
+            }
+        }
+
+        let fame_noise =
+            (unit_noise(seed, CHANNEL_REALM_PROFILE + 5, rid) as f32 * 12.0).round() as i32;
+        let fame = ((pop / 400) as i32
+            + cities as i32 * 18
+            + towns as i32 * 6
+            + walled as i32 * 8
+            + fame_noise)
+            .clamp(5, 100) as u8;
+
+        let manpower = pop / 18 + cities * 120 + towns * 40 + walled * 90;
+        let manpower_score = ((manpower as f32 / 35.0).sqrt() * 12.0)
+            .round()
+            .clamp(5.0, 100.0) as u32;
+        let military_strength =
+            ((fame as u32 * 40 + manpower_score * 60) / 100).clamp(1, 100) as u8;
+
+        realm.fame = fame;
+        realm.manpower = manpower;
+        realm.military_strength = military_strength;
+    }
+
+    let names: Vec<String> = realms.iter().map(|r| r.name.clone()).collect();
+    let profiles: Vec<(GovernmentKind, ReligionKind, RulerAmbition)> = realms
+        .iter()
+        .map(|r| (r.government, r.religion, r.ambition))
+        .collect();
+
+    for realm in realms.iter_mut() {
+        let rid = realm.id as u64;
+        let mut relations = Vec::new();
+        for &other in &neighbors[realm.id] {
+            let key = (realm.id.min(other) as u64) * 1024 + realm.id.max(other) as u64;
+            let kind = [
+                RelationKind::AncientAlliance,
+                RelationKind::BorderFeud,
+                RelationKind::TradePact,
+                RelationKind::Rivalry,
+                RelationKind::ColdPeace,
+            ][pick_enum_index(seed, CHANNEL_REALM_PROFILE + 6, key, 5)];
+            relations.push(RealmRelation {
+                other_realm_id: other,
+                kind,
+            });
+        }
+        relations.sort_by_key(|r| r.other_realm_id);
+        realm.relations = relations;
+
+        let (government, religion, ambition) = profiles[realm.id];
+        realm.goals = build_realm_goals(
+            government,
+            religion,
+            ambition,
+            &realm.relations,
+            &names,
+            seed,
+            rid,
+        );
+    }
+}
+
+fn build_realm_goals(
+    government: GovernmentKind,
+    religion: ReligionKind,
+    ambition: RulerAmbition,
+    relations: &[RealmRelation],
+    realm_names: &[String],
+    seed: u64,
+    rid: u64,
+) -> Vec<String> {
+    let mut goals = Vec::new();
+
+    goals.push(match ambition {
+        RulerAmbition::ExpandBorders => "Rozszerzyć granice kosztem słabszego sąsiada".into(),
+        RulerAmbition::EnrichTreasury => "Zwiększyć wpływy do skarbca przez cła i daniny".into(),
+        RulerAmbition::SecureFaith => format!("Utrwalić {} w prowincjach", religion.label()),
+        RulerAmbition::DominateTrade => "Przejąć kluczowe szlaki handlowe".into(),
+        RulerAmbition::FortifyHomeland => "Wzmocnić mury i załogi twierdz granicznych".into(),
+    });
+
+    let gov_goal = match government {
+        GovernmentKind::Monarchy => Some("Utrzymać dziedziczną władzę dynastii".to_string()),
+        GovernmentKind::Principality => Some("Utrzymać niezależność wobec większych dworów".into()),
+        GovernmentKind::CityRepublic => {
+            Some("Chronić przywileje obywateli stolicy".into())
+        }
+        GovernmentKind::Theocracy => {
+            Some(format!("Podporządkować prawo doktrynie ({})", religion.label()))
+        }
+        GovernmentKind::ClanFederation => {
+            Some("Utrzymać równowagę między klanami".into())
+        }
+    };
+    if let Some(g) = gov_goal {
+        if goals.first().map(|s| s.as_str()) != Some(g.as_str()) {
+            goals.push(g);
+        }
+    }
+
+    if let Some(rel) = relations.first() {
+        let other = realm_names
+            .get(rel.other_realm_id)
+            .map(|s| s.as_str())
+            .unwrap_or("sąsiadem");
+        let hist = match rel.kind {
+            RelationKind::AncientAlliance => format!("Utrzymać dawny sojusz z {other}"),
+            RelationKind::BorderFeud => format!("Rozstrzygnąć spór graniczny z {other}"),
+            RelationKind::TradePact => format!("Pogłębić pakt handlowy z {other}"),
+            RelationKind::Rivalry => format!("Osłabić rywala — {other}"),
+            RelationKind::ColdPeace => format!("Nie dopuścić do wojny z {other}"),
+        };
+        if goals.len() < 2 {
+            goals.push(hist);
+        } else if unit_noise(seed, CHANNEL_REALM_PROFILE + 7, rid) < 0.35 {
+            goals[1] = hist;
+        }
+    }
+
+    goals.truncate(2);
+    goals
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -930,6 +1482,19 @@ mod tests {
             name: "Test".into(),
             capital_idx: 1,
             settlement_idxs: vec![0, 1],
+            ruler_name: "Król Test".into(),
+            government: GovernmentKind::Monarchy,
+            culture: CultureKind::Agrarian,
+            religion: ReligionKind::AncestorRites,
+            ambition: RulerAmbition::FortifyHomeland,
+            fame: 40,
+            manpower: 200,
+            military_strength: 35,
+            goals: vec!["Utrzymać pokój".into()],
+            relations: Vec::new(),
+            exports: Vec::new(),
+            imports: Vec::new(),
+            trade_routes: Vec::new(),
         };
         let edge = RealmBorder {
             realm_a: 0,
@@ -988,6 +1553,49 @@ mod tests {
     }
 
     #[test]
+    fn realm_names_are_unique_and_distinct_from_settlements() {
+        let map = generate(WorldConfig::default());
+        let settlement_names: HashSet<&str> =
+            map.settlements.iter().map(|s| s.name.as_str()).collect();
+        let mut realm_names = HashSet::new();
+        for realm in &map.realms {
+            assert!(!realm.name.is_empty());
+            assert!(
+                realm_names.insert(realm.name.as_str()),
+                "duplicate realm name {}",
+                realm.name
+            );
+            assert!(
+                !settlement_names.contains(realm.name.as_str()),
+                "realm name {} collides with a settlement",
+                realm.name
+            );
+            assert_ne!(realm.name, map.settlements[realm.capital_idx].name);
+        }
+    }
+
+    #[test]
+    fn realm_profiles_are_filled_and_deterministic() {
+        let a = generate(WorldConfig::default());
+        let b = generate(WorldConfig::default());
+        assert_eq!(a.realms, b.realms);
+        for realm in &a.realms {
+            assert!(!realm.ruler_name.is_empty());
+            assert!(!realm.goals.is_empty());
+            assert!(realm.goals.len() <= 2);
+            assert!(realm.fame >= 5);
+            assert!(realm.military_strength >= 1);
+            assert!(realm.manpower > 0);
+            let pop = realm.population(&a.settlements);
+            assert!(pop > 0);
+            for rel in &realm.relations {
+                assert_ne!(rel.other_realm_id, realm.id);
+                assert!(rel.other_realm_id < a.realms.len());
+            }
+        }
+    }
+
+    #[test]
     fn settlement_map_default_border_fields() {
         let map = SettlementMap {
             settlements: Vec::new(),
@@ -1000,5 +1608,22 @@ mod tests {
         assert!(map.city_borders.is_empty());
         assert!(map.realms.is_empty());
         assert!(map.realm_borders.is_empty());
+    }
+
+    #[test]
+    fn rebuild_borders_from_owners_draws_shared_edge() {
+        let territory = TerritoryMap {
+            cols: 2,
+            rows: 1,
+            step: 8.0,
+            owners: vec![0, 1],
+        };
+        let borders = rebuild_realm_borders_from_owners(&territory);
+        assert!(
+            borders.iter().any(|b| {
+                b.realm_a == 0 && b.realm_b == Some(1) || b.realm_a == 1 && b.realm_b == Some(0)
+            }),
+            "expected a shared border between realm 0 and 1"
+        );
     }
 }

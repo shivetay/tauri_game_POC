@@ -81,7 +81,24 @@ impl GameTime {
     }
 
     pub fn advance_hours(&mut self, hours: u32) {
-        self.advance(hours as f64 * 3600.0);
+        if hours == 0 {
+            return;
+        }
+        // `advance` caps one call at a day; loop so multi-day hour skips work.
+        let mut left = hours;
+        while left > 0 {
+            let chunk = left.min(24);
+            self.advance(chunk as f64 * 3600.0);
+            left -= chunk;
+        }
+    }
+
+    /// Jump calendar days without changing time-of-day.
+    pub fn advance_days(&mut self, days: u32) {
+        if days == 0 {
+            return;
+        }
+        self.day = self.day.saturating_add(days);
     }
 
     /// 1-based year (day 1 → year 1).
@@ -246,6 +263,24 @@ mod tests {
         assert_eq!(t.day, 2);
         assert_eq!(t.second_of_day, 3);
         assert_eq!(t.day_of_month(), 2);
+    }
+
+    #[test]
+    fn advance_days_keeps_clock() {
+        let mut t = GameTime::start_of_day_one_at(8, 0, 0);
+        t.advance_days(DAYS_PER_MONTH);
+        assert_eq!(t.day, 1 + DAYS_PER_MONTH);
+        assert_eq!(t.month(), 2);
+        assert_eq!(t.day_of_month(), 1);
+        assert_eq!(t.second_of_day, 8 * 3600);
+    }
+
+    #[test]
+    fn advance_hours_multi_day() {
+        let mut t = GameTime::start_of_day_one_at(8, 0, 0);
+        t.advance_hours(48);
+        assert_eq!(t.day, 3);
+        assert_eq!(t.second_of_day, 8 * 3600);
     }
 
     #[test]

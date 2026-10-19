@@ -11,7 +11,9 @@ use crate::perf::PerfStats;
 use crate::settlements_draw::{
     settlement_info, RoadDetail, SettlementDrawStyle, SettlementHit, WorldBounds,
 };
-use crate::world::borders::{CityBorder, Realm, RealmBorder, TerritoryMap};
+use crate::world::borders::{
+    rebuild_realm_borders_from_owners, CityBorder, Realm, RealmBorder, TerritoryMap,
+};
 use crate::world::config::{TerrainGenParams, WorldConfig};
 use crate::world::ecology::{
     generate_chunk_ecology_sampled, generate_region_ecology_sampled, ChunkEcologyMap,
@@ -23,6 +25,9 @@ use crate::world::grid::{
 };
 use crate::world::sampler::TerrainSampler;
 use crate::world::building::{generate as generate_buildings, BuildingMap};
+use crate::world::realm_diplomacy::RealmDiplomacyMap;
+use crate::world::realm_trade::fill_realm_trade;
+use crate::game_time::{GameTime, MONTHS_PER_YEAR, SECONDS_PER_DAY};
 use crate::world::building::NeedIntent;
 use crate::world::npc::{
     activity_at_home, activity_at_supply, find_remote_supply, find_supply_building,
@@ -296,10 +301,18 @@ pub struct MapSession {
     pub texture_dirty: bool,
     pub(crate) selected_info: Option<String>,
     pub(crate) selected_hit: Option<SettlementHit>,
+    /// Selected realm for the left-panel dossier (click on realm name).
+    pub(crate) selected_realm: Option<usize>,
+    /// Live diplomacy overlay (tension / relation kind); session-only.
+    pub(crate) diplomacy: RealmDiplomacyMap,
+    /// Last absolute month index already applied to diplomacy (`year*12 + month - 1`).
+    diplomacy_month: Option<u32>,
     /// Land cell selected on Chunk LOD; enables the Spawn button.
     pub(crate) pending_spawn: Option<(f32, f32)>,
     /// Confirmed player start (fixed); enables gameplay after Spawn.
     pub(crate) player_spawn: Option<(f32, f32)>,
+    /// World clock / NPC / diplomacy without a player spawn.
+    pub(crate) world_sim: bool,
     /// Current marker position.
     pub(crate) player_pos: Option<(f32, f32)>,
     /// Settlement/district UI focus while the player stands inside a settlement radius.
@@ -360,8 +373,12 @@ impl MapSession {
             texture_dirty: false,
             selected_info: None,
             selected_hit: None,
+            selected_realm: None,
+            diplomacy: RealmDiplomacyMap::default(),
+            diplomacy_month: None,
             pending_spawn: None,
             player_spawn: None,
+            world_sim: false,
             player_pos: None,
             player_area: None,
             local_area_tab: LocalAreaTab::Npcs,
@@ -407,6 +424,7 @@ impl MapSession {
         self.loading = false;
         self.selected_info = None;
         self.selected_hit = None;
+        self.selected_realm = None;
         self.texture_dirty = true;
     }
 
@@ -428,6 +446,7 @@ impl MapSession {
             self.lod_cache.clear();
             self.pending_spawn = None;
             self.player_spawn = None;
+            self.world_sim = false;
             self.player_pos = None;
             self.player_area = None;
             self.local_area_tab = LocalAreaTab::Npcs;
@@ -436,11 +455,14 @@ impl MapSession {
             self.terrain = None;
             self.known_places.clear();
             self.known_chunks.clear();
+            self.diplomacy = RealmDiplomacyMap::default();
+            self.diplomacy_month = None;
         }
         self.request_id += 1;
         self.loading = true;
         self.selected_info = None;
         self.selected_hit = None;
+        self.selected_realm = None;
         let (settlements, npcs, buildings) = if refresh_settlements {
             (None, None, None)
         } else {
@@ -1191,6 +1213,7 @@ impl MapSession {
             return;
         };
         self.player_spawn = Some(pos);
+        self.world_sim = false;
         self.player_pos = Some(pos);
         self.player_area = None;
         self.move_path.clear();
@@ -1198,6 +1221,8 @@ impl MapSession {
         self.known_places.clear();
         self.known_chunks.clear();
         self.game.reset_time();
+        self.diplomacy_month = Some(absolute_month_index(self.game.time()));
+        self.ensure_diplomacy();
         let config = self.config();
         self.explore_player_chunk(&config);
         self.update_visited_places();
@@ -1206,6 +1231,36 @@ impl MapSession {
             pos.0, pos.1
         ));
         self.texture_dirty = true;
+    }
+
+    /// Start or stop background world simulation (no player marker / fog).
+    pub(crate) fn toggle_world_sim(&mut self) {
+        if self.player_spawn.is_some() || self.loading || self.grid.is_none() {
+            return;
+        }
+        if self.world_sim {
+            self.world_sim = false;
+            self.selected_info = Some("Symulacja świata zatrzymana.".into());
+            return;
+        }
+        self.world_sim = true;
+        self.game.reset_time();
+        if self.game.paused() {
+            self.game.toggle_pause();
+        }
+        self.diplomacy_month = Some(absolute_month_index(self.game.time()));
+        self.ensure_diplomacy();
+        if self.npc_runtimes.is_empty() {
+            self.rebuild_all_npc_runtimes();
+        }
+        self.selected_info = Some(
+            "Symulacja świata (bez gracza) — czas, NPC i dyplomacja.".into(),
+        );
+        self.texture_dirty = true;
+    }
+
+    pub(crate) fn simulation_active(&self) -> bool {
+        self.player_spawn.is_some() || self.world_sim
     }
 
     pub(crate) fn cancel_pending_spawn(&mut self) {
@@ -1485,6 +1540,7 @@ impl MapSession {
             self.npcs = Some(result.npcs);
             self.buildings = Some(result.buildings);
             self.refresh_settlement_road_adj();
+            self.ensure_diplomacy();
             // Rebuild NPC runtimes when the roster was regenerated with settlements.
             if self.npc_runtimes.is_empty()
                 || self
@@ -1502,19 +1558,104 @@ impl MapSession {
             self.loading = false;
             self.selected_info = None;
             self.selected_hit = None;
+            self.selected_realm = None;
             self.texture_dirty = true;
         }
+    }
+
+    pub(crate) fn ensure_diplomacy(&mut self) {
+        let Some(map) = self.settlements.as_ref() else {
+            self.diplomacy = RealmDiplomacyMap::default();
+            return;
+        };
+        if self.diplomacy.needs_rebuild(&map.realms) {
+            self.diplomacy = RealmDiplomacyMap::from_realms(&map.realms);
+            self.diplomacy_month = Some(absolute_month_index(self.game.time()));
+        }
+    }
+
+    /// Apply pending monthly diplomacy ticks up to the current game calendar.
+    pub(crate) fn advance_diplomacy(&mut self) {
+        self.ensure_diplomacy();
+        if self.diplomacy.edges.is_empty() {
+            return;
+        }
+        let current = absolute_month_index(self.game.time());
+        let Some(mut last) = self.diplomacy_month else {
+            self.diplomacy_month = Some(current);
+            return;
+        };
+        if self.settlements.is_none() {
+            return;
+        }
+        // Cap catch-up: frame hitch ≤24 months; manual skip may need a full year.
+        let cap = 360u32;
+        let mut steps = 0u32;
+        let mut borders_dirty = false;
+        while last < current && steps < cap {
+            last += 1;
+            steps += 1;
+            let realms = self
+                .settlements
+                .as_ref()
+                .map(|m| m.realms.clone())
+                .unwrap_or_default();
+            let Some(map) = self.settlements.as_mut() else {
+                break;
+            };
+            if self
+                .diplomacy
+                .tick_month(&realms, &mut map.territory, last)
+            {
+                map.realm_borders = rebuild_realm_borders_from_owners(&map.territory);
+                borders_dirty = true;
+            }
+        }
+        if steps > 0 || borders_dirty {
+            self.texture_dirty = true;
+        }
+        self.diplomacy_month = Some(last.min(current));
+    }
+
+    /// Manual time skip: clock + diplomacy; movement/NPC when applicable.
+    pub(crate) fn skip_game_hours(&mut self, hours: u32) {
+        if hours == 0 {
+            return;
+        }
+        self.game.skip_hours(hours);
+        self.apply_time_skip_effects(hours as f64 * 3600.0);
+    }
+
+    pub(crate) fn skip_game_days(&mut self, days: u32) {
+        if days == 0 {
+            return;
+        }
+        self.game.skip_days(days);
+        self.apply_time_skip_effects(days as f64 * SECONDS_PER_DAY as f64);
+    }
+
+    fn apply_time_skip_effects(&mut self, game_secs: f64) {
+        if self.player_spawn.is_some() {
+            self.advance_movement(game_secs);
+        }
+        if self.simulation_active() {
+            self.advance_npc_runtimes(game_secs);
+        }
+        self.advance_diplomacy();
     }
 
     pub(crate) fn tick_simulation(&mut self) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
-        // Clock / day cycle runs only after spawn (and not while generating).
-        if !self.loading && self.player_spawn.is_some() {
+        // Clock runs after player spawn or world-sim (not while generating).
+        if !self.loading && self.simulation_active() {
             let game_secs = self.game.tick(dt);
-            self.advance_movement(game_secs);
+            if self.player_spawn.is_some() {
+                self.advance_movement(game_secs);
+            }
             self.advance_npc_runtimes(game_secs);
+            self.advance_diplomacy();
         }
     }
 
@@ -1951,12 +2092,18 @@ fn generate_job(req: GenRequest) -> GenResult {
 
     let sampler = TerrainSampler::new(config.clone());
 
-    let settlements = req
+    let mut settlements = req
         .settlements
         .unwrap_or_else(|| generate_settlements_sampled(&sampler));
     let buildings = req
         .buildings
         .unwrap_or_else(|| generate_buildings(req.seed, &settlements.settlements));
+    fill_realm_trade(
+        &sampler,
+        &settlements.settlements,
+        &buildings,
+        &mut settlements.realms,
+    );
     let npcs = req
         .npcs
         .unwrap_or_else(|| {
@@ -2007,6 +2154,10 @@ fn generate_job(req: GenRequest) -> GenResult {
     }
 }
 
+
+fn absolute_month_index(t: GameTime) -> u32 {
+    t.year().saturating_sub(1) * MONTHS_PER_YEAR + t.month().saturating_sub(1)
+}
 
 pub(crate) fn biome_label(biome: TileType) -> &'static str {
     for (tile, info) in BIOMES {

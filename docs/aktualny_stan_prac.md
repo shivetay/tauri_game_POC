@@ -1,6 +1,6 @@
 # Aktualny stan prac
 
-**Stan na: 14.10.2026**
+**Stan na: 19.10.2026**
 
 ## Podsumowanie
 
@@ -15,10 +15,13 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Po spawnie: panel Lokalizacja (NPC | Budynki), budynki z `(x,y)` i dynamicznym zapasem Sell (także mutacje z podróży między osadami). Szczegóły: [budynki-stan.md](./budynki-stan.md).
 - Wybór miejsca startu i spawn postaci na mapie.
 - Podróż piesza po lądzie, preferowanie grafu dróg, przejście między poziomami LOD, odkrywanie chunków i znanych osad.
-- Zegar gry z pauzą, prędkościami ×1/×10/×60 oraz ręcznym przesunięciem o godzinę; czas podróży aktualizuje pozycję gracza.
-- Wskaźnik cyklu dnia/nocy pod zegarem (po spawnie): oś wschód–południe–zachód ze słońcem (06–18) i księżycem (18–06); czas gry rusza dopiero po spawnie; mapa nie jest tintowana.
+- Zegar gry z pauzą, prędkościami ×1/×10/×60 oraz ręcznym skokiem: +1 h / dzień / tydzień / miesiąc / rok; czas podróży aktualizuje pozycję gracza.
+- Wskaźnik cyklu dnia/nocy pod zegarem (po spawnie lub w symulacji świata): oś wschód–południe–zachód ze słońcem (06–18) i księżycem (18–06); mapa nie jest tintowana.
+- Przycisk **Symulacja (bez gracza)**: uruchamia zegar, NPC i dyplomację bez spawnu / fog / markera; osobny stop. Spawn gracza wyłącza ten tryb i resetuje czas.
 - Kalendarz gry: rok 360-dniowy (12×30), etykieta zegara z rokiem, dniem i miesiącem; cztery pory roku (Wiosna/Lato/Jesień/Zima, po 3 miesiące). Wygląd mapy nadal niezależny od pory roku.
 - Aplikacja desktopowa oparta o Bevy i egui.
+- Państwa (`Realm`): unikalne nazwy; profil (władca, ustrój, kultura, religia, ambicja, sława, liczebność, siła wojskowa, cele tylko do odczytu). Statyczny handel: eksport/import + szlaki. Dyplomacja v0 (sesja): napięcie −100…100; `RelationKind` w dossier. Wojna: casus nie tylko podbój; okupacja tylko przy `ExpandBorders`; ograniczona wojna kończy się szybciej bez pełnego zajęcia; trzecie państwo może embargo **lub** wypowiedzieć wojnę już walczącym. Ugoda v0: aneksja tego, co okupowane → `owners` + polyline; osady bez zmiany przynależności. Granice → etykieta; klik → dossier.
+- Nazwy osad na mapie nad markerem: świat — miasta i miasteczka; region — też wsie; chunk — wszystkie; bez nakładania; pod mgłą tylko odkryte.
 
 ## W trakcie
 
@@ -32,6 +35,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Handel z graczem, markery NPC na mapie.
 - Dialog gracza z NPC (informator / handel) i zlecenia; zapis relacji w sesji.
 - Trwała migracja populacji, harmonogramy NPC, frakcje oraz wydarzenia świata.
+- Aktywna polityka państw: przypisanie osad po aneksji, ekspansja poza wojną, reputacja/prawa; cele runtime.
 - Rozgrywkowe delty terenu i infrastruktura gracza.
 - Wpływ pory roku na wygląd mapy (etap 4 z issue #8).
 
