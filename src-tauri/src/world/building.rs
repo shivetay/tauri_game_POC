@@ -266,6 +266,59 @@ pub fn generate(seed: u64, settlements: &[Settlement]) -> BuildingMap {
     BuildingMap { buildings }
 }
 
+/// Dedicated channel for guaranteed admin halls — must not touch `CHANNEL_BUILDING` rolls.
+const CHANNEL_ADMIN: u64 = 72;
+
+/// Ensure each capital settlement has a `Hall`. Inserts into the settlement's contiguous block.
+/// Call only when (re)generating buildings, not when reusing a cached `BuildingMap` with NPCs.
+pub fn ensure_capital_halls(
+    seed: u64,
+    settlements: &[Settlement],
+    capital_idxs: &[usize],
+    map: &mut BuildingMap,
+) {
+    for &si in capital_idxs {
+        let Some(settlement) = settlements.get(si) else {
+            continue;
+        };
+        if map
+            .in_settlement(si)
+            .iter()
+            .any(|b| b.kind == BuildingKind::Hall)
+        {
+            continue;
+        }
+        let di = settlement
+            .districts
+            .iter()
+            .position(|d| d.kind == DistrictKind::Center)
+            .or_else(|| {
+                settlement
+                    .districts
+                    .iter()
+                    .position(|d| d.kind == DistrictKind::Noble)
+            })
+            .unwrap_or(SETTLEMENT_WIDE_DI);
+        // High building_i avoids colliding with normal 0..4 keys for CHANNEL_BUILDING stock/pos.
+        let key = building_key(si, di, 10_000);
+        let mut hall = make_building(seed, key, BuildingKind::Hall, si, di, settlement);
+        // Relabel with admin channel so the guaranteed hall is recognizable and stable.
+        let suffix =
+            ((unit_noise(seed, CHANNEL_ADMIN, key) * 9.0).floor() as u8) + 1;
+        hall.name = format!("{} {}", BuildingKind::Hall.label(), suffix);
+
+        let insert_at = match map.buildings.iter().rposition(|b| b.settlement_index == si) {
+            Some(i) => i + 1,
+            None => map
+                .buildings
+                .iter()
+                .position(|b| b.settlement_index > si)
+                .unwrap_or(map.buildings.len()),
+        };
+        map.buildings.insert(insert_at, hall);
+    }
+}
+
 fn make_building(
     seed: u64,
     key: u64,

@@ -7,6 +7,7 @@ use crate::world::config::LodLevel;
 use crate::world::elevation::is_water_biome;
 use crate::world::goods::Good;
 use crate::world::prng::unit_noise;
+use crate::world::realm_laws::RealmLaw;
 use crate::world::sampler::TerrainSampler;
 use crate::world::settlement::{Road, Settlement, SettlementKind};
 
@@ -229,6 +230,9 @@ pub struct Realm {
     pub imports: Vec<RealmCommodity>,
     /// Matched trade routes with other realms (read-only).
     pub trade_routes: Vec<RealmTradeRoute>,
+    /// Seed-stable laws from profile + admin capacity (see `realm_laws`).
+    #[serde(default)]
+    pub laws: Vec<RealmLaw>,
 }
 
 impl Realm {
@@ -760,6 +764,7 @@ fn build_realms(seed: u64, settlements: &[Settlement], roads: &[Road]) -> Vec<Re
             exports: Vec::new(),
             imports: Vec::new(),
             trade_routes: Vec::new(),
+            laws: Vec::new(),
         });
     }
     realms
@@ -1495,6 +1500,7 @@ mod tests {
             exports: Vec::new(),
             imports: Vec::new(),
             trade_routes: Vec::new(),
+            laws: Vec::new(),
         };
         let edge = RealmBorder {
             realm_a: 0,

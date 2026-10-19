@@ -21,11 +21,13 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Kalendarz gry: rok 360-dniowy (12×30), etykieta zegara z rokiem, dniem i miesiącem; cztery pory roku (Wiosna/Lato/Jesień/Zima, po 3 miesiące). Wygląd mapy nadal niezależny od pory roku.
 - Aplikacja desktopowa oparta o Bevy i egui.
 - Państwa (`Realm`): unikalne nazwy; profil (władca, ustrój, kultura, religia, ambicja, sława, liczebność, siła wojskowa, cele tylko do odczytu). Statyczny handel: eksport/import + szlaki. Dyplomacja v0 (sesja): napięcie −100…100; `RelationKind` w dossier. Wojna: casus nie tylko podbój; okupacja tylko przy `ExpandBorders`; ograniczona wojna kończy się szybciej bez pełnego zajęcia; trzecie państwo może embargo **lub** wypowiedzieć wojnę już walczącym. Ugoda v0: aneksja tego, co okupowane → `owners` + polyline; osady bez zmiany przynależności. Granice → etykieta; klik → dossier.
+- Prawa państwowe (etap A + UI): `Realm.laws` generowane z religii/kultury/ustroju/ambicji oraz pojemności administracyjnej z budynków; gwarantowany `Hall` w stolicy przy świeżej generacji budynków; dossier państwa pokazuje listę praw. Bez filtrów handlu — [prawa.md](./prawa.md).
 - Nazwy osad na mapie nad markerem: świat — miasta i miasteczka; region — też wsie; chunk — wszystkie; bez nakładania; pod mgłą tylko odkryte.
 
 ## W trakcie
 
 - Dalsza praca nad spójnością mostów / przebiegu dróg (osobny wątek generatora; nie blokuje podróży NPC po grafie osad).
+- Plan aneksji osad po wojnie (E1–E5): dokument [aneksja-osad.md](./aneksja-osad.md) — kod jeszcze nie rozpoczęty; kolejny slice: E1+E2.
 
 ## Jeszcze niezaimplementowane systemy rozgrywki
 
@@ -35,7 +37,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Handel z graczem, markery NPC na mapie.
 - Dialog gracza z NPC (informator / handel) i zlecenia; zapis relacji w sesji.
 - Trwała migracja populacji, harmonogramy NPC, frakcje oraz wydarzenia świata.
-- Aktywna polityka państw: przypisanie osad po aneksji, ekspansja poza wojną, reputacja/prawa; cele runtime.
+- Aktywna polityka państw: **przepisanie osad po ugodzie**, opór/bunt/interwencja/secesja ([aneksja-osad.md](./aneksja-osad.md)); ekspansja poza wojną; reputacja; cele runtime; prawa — skutek na handel + panel osady ([prawa.md](./prawa.md) B–C).
 - Rozgrywkowe delty terenu i infrastruktura gracza.
 - Wpływ pory roku na wygląd mapy (etap 4 z issue #8).
 

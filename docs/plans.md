@@ -43,6 +43,8 @@ Proponowany podział na etapy gry znajduje się w osobnych dokumentach:
 - [Drogi — zależności i plan wdrożenia](./drogi.md)
 - [Miasta i osady — zależności i plan wdrożenia](./miasta-osady.md)
 - [Państwa i frakcje — zależności i plan wdrożenia](./panstwa.md)
+- [Prawa państwowe — plan wdrożenia MVP](./prawa.md)
+- [Aneksja osad po wojnie — plan wdrożenia](./aneksja-osad.md)
 - [NPC — zależności i plan wdrożenia](./npc.md)
 - [NPC — cechy, aktywność i podróż (stan)](./npc-cechy.md)
 - [Dzielnice — aktualna lista i zależności](./dzielnice.md)

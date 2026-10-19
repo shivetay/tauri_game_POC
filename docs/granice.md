@@ -141,9 +141,7 @@ Zależności: granice z iteracji 1 oraz minimalny system frakcji z [panstwa.md](
 | Etap | Zakres | Kryterium |
 | --- | --- | --- |
 | 2.1 Profil państwa | Ustrój (np. militarne, pacyfistyczne, anarchistyczne, wolne miasto) i cechy ambicji w `Realm`, z osobnego strumienia PRNG. | Ten sam seed daje ten sam profil. |
-| 2.2 Prawa startowe | 1–2 prawa na państwo, np. stawka podatku i dostęp do dzielnic, obowiązujące w jego osadach. | Dla każdej osady da się ustalić obowiązujące prawo. |
-| 2.3 Wpływ na cenę lub dostęp | Jedno prawo modyfikuje konkretną cenę, opłatę lub dostęp do zlecenia. | Zgodne z minimalnym zakresem z `panstwa.md`. |
-| 2.4 UI | Panel osady pokazuje państwo, ustrój i prawo. | Gracz wie, kto ustala reguły w osadzie. |
+| 2.2–2.4 Prawa | **Kanon wdrożenia:** [prawa.md](./prawa.md) (etapy A–C). Skrót: prawa z profilu Realm + pojemność z budynków administracyjnych; min. 1 skutek poza tekstem; UI dossier/osada. | Kryteria DoD w `prawa.md` §9. |
 | 2.5 Testy i dokumentacja | Determinizm, seed `6` bez zmian, aktualizacja dokumentów. | `cargo test --lib` przechodzi. |
 
 ### Iteracja 3 — relacje i odkrywanie granic

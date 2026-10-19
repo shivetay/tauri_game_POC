@@ -810,6 +810,7 @@ mod tests {
             }],
             imports: Vec::new(),
             trade_routes,
+            laws: Vec::new(),
         }
     }
 

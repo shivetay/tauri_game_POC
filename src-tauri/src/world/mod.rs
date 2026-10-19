@@ -4,6 +4,7 @@ pub mod building;
 pub mod config;
 pub mod goods;
 pub mod realm_diplomacy;
+pub mod realm_laws;
 pub mod realm_trade;
 pub mod delta;
 pub mod ecology;
