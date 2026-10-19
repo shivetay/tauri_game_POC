@@ -1,7 +1,9 @@
 //! Border overlay: realm wash + dashed realm lines + dotted city polygons.
+//! Session diplomacy: tension hatch + occupation cross-hatch (stage B).
 
 use crate::settlements_draw::{Rgba, WorldBounds};
 use crate::world::borders::{CityBorder, Realm, RealmBorder, TerritoryMap};
+use crate::world::realm_diplomacy::RealmDiplomacyMap;
 use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
 const WASH_ALPHA: u8 = 38;
@@ -47,6 +49,7 @@ pub fn draw_borders(
     realm_borders: &[RealmBorder],
     city_borders: &[CityBorder],
     mode: BorderDrawMode,
+    diplomacy: Option<&RealmDiplomacyMap>,
 ) {
     if width == 0 || height == 0 || bounds.span <= 0.0 {
         return;
@@ -63,6 +66,9 @@ pub fn draw_borders(
 
     if draw_realms && !realms.is_empty() {
         draw_territory_wash(pixels, width, height, bounds, territory);
+        if let Some(dip) = diplomacy {
+            draw_diplomacy_hatch(pixels, width, height, bounds, territory, dip);
+        }
         let line_w = match mode {
             BorderDrawMode::Realms => (width as f32 * 0.0045).clamp(1.8, 3.2),
             _ => (width as f32 * 0.0035).clamp(1.4, 2.6),
@@ -135,6 +141,98 @@ fn draw_territory_wash(
                 py as i32,
                 Rgba::rgba(c.r, c.g, c.b, WASH_ALPHA),
             );
+        }
+    }
+}
+
+fn draw_diplomacy_hatch(
+    pixels: &mut [u8],
+    width: usize,
+    height: usize,
+    bounds: &WorldBounds,
+    territory: &TerritoryMap,
+    diplomacy: &RealmDiplomacyMap,
+) {
+    let cols = territory.cols as usize;
+    let rows = territory.rows as usize;
+    let step = territory.step;
+    if cols == 0 || rows == 0 || step <= 0.0 || territory.owners.is_empty() {
+        return;
+    }
+
+    let tense: std::collections::HashSet<usize> = diplomacy
+        .tension_border_cells(territory)
+        .into_iter()
+        .collect();
+
+    let has_occupation = diplomacy.occupation.len() == territory.owners.len()
+        && diplomacy.occupation.iter().any(|&c| c != u16::MAX);
+
+    if tense.is_empty() && !has_occupation {
+        return;
+    }
+
+    for py in 0..height {
+        let wy = bounds.y0 + ((py as f32 + 0.5) / height as f32) * bounds.span;
+        let gy = (wy / step).floor() as isize;
+        if gy < 0 || gy >= rows as isize {
+            continue;
+        }
+        for px in 0..width {
+            let wx = bounds.x0 + ((px as f32 + 0.5) / width as f32) * bounds.span;
+            let gx = (wx / step).floor() as isize;
+            if gx < 0 || gx >= cols as isize {
+                continue;
+            }
+            let idx = gy as usize * cols + gx as usize;
+            let owner = territory.owners.get(idx).copied().unwrap_or(u16::MAX);
+            if owner == u16::MAX {
+                continue;
+            }
+            let occ = diplomacy
+                .occupation
+                .get(idx)
+                .copied()
+                .unwrap_or(u16::MAX);
+
+            if occ != u16::MAX && occ != owner {
+                // Cross-hatch: de jure + occupier.
+                let c_owner = realm_color(owner as usize);
+                let c_occ = realm_color(occ as usize);
+                let period = 4;
+                if (px + py) % period == 0 {
+                    blend_pixel(
+                        pixels,
+                        width,
+                        height,
+                        px as i32,
+                        py as i32,
+                        Rgba::rgba(c_owner.r, c_owner.g, c_owner.b, 110),
+                    );
+                }
+                if (px as i32 - py as i32).rem_euclid(period as i32) == 0 {
+                    blend_pixel(
+                        pixels,
+                        width,
+                        height,
+                        px as i32,
+                        py as i32,
+                        Rgba::rgba(c_occ.r, c_occ.g, c_occ.b, 120),
+                    );
+                }
+            } else if tense.contains(&idx) {
+                let c = realm_color(owner as usize);
+                if (px + py) % 5 == 0 {
+                    blend_pixel(
+                        pixels,
+                        width,
+                        height,
+                        px as i32,
+                        py as i32,
+                        Rgba::rgba(c.r, c.g, c.b, 90),
+                    );
+                }
+            }
         }
     }
 }

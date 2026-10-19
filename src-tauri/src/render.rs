@@ -179,6 +179,7 @@ pub struct BordersOverlay<'a> {
     pub realms: &'a [Realm],
     pub realm_borders: &'a [RealmBorder],
     pub city_borders: &'a [CityBorder],
+    pub diplomacy: Option<&'a crate::world::realm_diplomacy::RealmDiplomacyMap>,
 }
 
 /// Tip at spawn; base above so the marker points into the chosen tile.
@@ -301,6 +302,7 @@ pub fn compose_map_rgba(input: ComposeInput<'_>) -> (usize, usize, Vec<u8>) {
             borders.realm_borders,
             borders.city_borders,
             borders.mode,
+            borders.diplomacy,
         );
     }
 

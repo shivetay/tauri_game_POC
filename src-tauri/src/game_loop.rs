@@ -68,6 +68,10 @@ impl GameLoop {
         self.time.advance_hours(hours);
     }
 
+    pub fn skip_days(&mut self, days: u32) {
+        self.time.advance_days(days);
+    }
+
     /// Restart the clock at day 1 · 08:00 (keeps pause / speed).
     pub fn reset_time(&mut self) {
         self.time = GameTime::start_of_day_one_at(8, 0, 0);
@@ -123,5 +127,14 @@ mod tests {
         assert!(loop_.time().day > 1);
         loop_.reset_time();
         assert_eq!(loop_.time(), GameTime::start_of_day_one_at(8, 0, 0));
+    }
+
+    #[test]
+    fn skip_days_jumps_calendar() {
+        let mut loop_ = GameLoop::new();
+        let sod = loop_.time().second_of_day;
+        loop_.skip_days(360);
+        assert_eq!(loop_.time().year(), 2);
+        assert_eq!(loop_.time().second_of_day, sod);
     }
 }

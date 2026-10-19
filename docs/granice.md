@@ -158,14 +158,14 @@ Zależności: granice z iteracji 1 oraz minimalny system frakcji z [panstwa.md](
 
 ### Iteracja 4 — zmiany granic w sesji
 
-Zależności: czas sesji, pętla ticków i zapis sesji (poza zakresem tego ticketu). Baza z seeda pozostaje niezmienna (`plans.md`, pkt E).
+Zależności: czas sesji, pętla ticków. Raster `owners` z seeda jest punktem startu; **sesja może go mutować** po ugodzie wojennej (etap C dyplomacji). Pełny zapis/wczytanie nakładki — osobno.
 
 | Etap | Zakres | Kryterium |
 | --- | --- | --- |
 | 4.1 Warstwa nakładki | `settlement_overlays` w sesji z różnicami względem granic z seeda. | Baza z seeda nie jest modyfikowana. |
 | 4.2 Rozrost miast | Wzrost populacji i migracje zmieniają promień granicy miasta. | Zmiana widoczna i zapisana w historii. |
-| 4.3 Zmiany terytorium | Przejęcie, rozpad lub połączenie państw jako zdarzenia świata; najpierw jedno zdarzenie, np. przejęcie sąsiedniej osady. | Każda zmiana ma czytelną przyczynę. |
-| 4.4 Konflikty | Konflikt graniczny wynikający z relacji, bez pełnej symulacji wojen. | Gracz widzi skutek w okolicy. |
+| 4.3 Zmiany terytorium | **Częściowo w kodzie:** ugoda po wojnie anektuje okupowane komórki do `TerritoryMap.owners` i przebudowuje `realm_borders` (`rebuild_realm_borders_from_owners`). Bez zmiany przynależności osad w v0. | Wash + linie granic po rozejmie. |
+| 4.4 Konflikty | Wojna abstrakcyjna + okupacja (claim) + hatch — zob. [panstwa.md](./panstwa.md). | Gracz widzi skutek na mapie. |
 | 4.5 Zapis i wczytanie | Zapis nakładki z sesją, odtwarzanie z `seed + nakładka`. | Wczytanie daje identyczne granice. |
 | 4.6 Testy i dokumentacja | Determinizm baza + nakładka, odtwarzanie zapisu. | Seed `6` bez zmian. |
 

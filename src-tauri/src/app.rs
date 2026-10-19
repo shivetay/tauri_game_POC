@@ -1,10 +1,13 @@
 use bevy_egui::egui::{self, pos2, Align2, Color32, FontId, RichText, Sense, Vec2};
 
+use crate::borders_draw::BorderDrawMode;
 use crate::colors::BIOMES;
 use crate::ecology_draw::{
     life_area_summary, FAUNA_BIRD, FAUNA_LARGE_MAMMAL, FAUNA_SMALL, VEGETATION_RGB,
 };
-use crate::game_time::{GameTime, SkyBody, SPEED_MULTIPLIERS};
+use crate::game_time::{
+    GameTime, SkyBody, DAYS_PER_MONTH, DAYS_PER_YEAR, SPEED_MULTIPLIERS,
+};
 use crate::render::{compose_map_rgba, BordersOverlay, ComposeInput};
 use crate::session::{
     biome_label, cell_world_at_pixel, format_pop, is_land_biome, player_at, MapSession,
@@ -12,9 +15,10 @@ use crate::session::{
 };
 use crate::settlements_draw::{
     district_info, format_settlement_label, hit_settlement, road_info, settlement_info,
-    SettlementHit, DISTRICT_KIND_ORDER, ROAD_KIND_ORDER, SETTLEMENT_KIND_ORDER,
+    SettlementHit, WorldBounds, DISTRICT_KIND_ORDER, ROAD_KIND_ORDER, SETTLEMENT_KIND_ORDER,
 };
-use crate::world::settlement::{SettlementKind, SettlementMap};
+use crate::world::borders::Realm;
+use crate::world::settlement::{Settlement, SettlementKind, SettlementMap};
 use crate::world::types::{ChunkId, RegionId};
 
 pub struct MapApp {
@@ -73,6 +77,7 @@ impl MapApp {
                 realms: s.realms(),
                 realm_borders: s.realm_borders(),
                 city_borders: s.city_borders(),
+                diplomacy: Some(&s.diplomacy),
             }),
             _ => None,
         };
@@ -154,6 +159,7 @@ impl MapApp {
                             settlement_index: row.index,
                             district_index: None,
                         });
+                        self.session.selected_realm = None;
                         self.session.selected_info = Some(format!(
                             "{} · {} · {} mieszk.",
                             row.name,
@@ -494,7 +500,7 @@ impl MapApp {
                 ui.label(RichText::new(status).small());
             });
 
-            if self.session.player_spawn.is_some() {
+            if self.session.simulation_active() {
                 ui.add_space(6.0);
                 draw_sky_path_indicator(ui, self.session.game.time());
             }
@@ -524,12 +530,50 @@ impl MapApp {
             });
 
             ui.add_space(4.0);
+            ui.label(RichText::new("Przeskocz").small());
             if ui
                 .add(egui::Button::new("+1 h").min_size(Vec2::new(ui.available_width(), 0.0)))
                 .clicked()
             {
-                self.session.game.skip_hours(1);
-                self.session.advance_movement(3600.0);
+                self.session.skip_game_hours(1);
+            }
+            ui.horizontal(|ui| {
+                let skips = [
+                    ("+1 d", 1u32),
+                    ("+1 tyg", 7),
+                    ("+1 mies", DAYS_PER_MONTH),
+                    ("+1 rok", DAYS_PER_YEAR),
+                ];
+                for (label, days) in skips {
+                    if ui.button(label).clicked() {
+                        self.session.skip_game_days(days);
+                    }
+                }
+            });
+
+            if self.session.player_spawn.is_none() {
+                ui.add_space(8.0);
+                let sim_label = if self.session.world_sim {
+                    "Zatrzymaj symulację"
+                } else {
+                    "Symulacja (bez gracza)"
+                };
+                if ui
+                    .add_enabled(
+                        !self.session.loading && self.session.grid.is_some(),
+                        egui::Button::new(sim_label).min_size(Vec2::new(ui.available_width(), 0.0)),
+                    )
+                    .clicked()
+                {
+                    self.session.toggle_world_sim();
+                }
+                if self.session.world_sim {
+                    ui.label(
+                        RichText::new("Świat żyje bez markera gracza.")
+                            .small()
+                            .weak(),
+                    );
+                }
             }
 
             if let Some((wx, wy)) = self.session.pending_spawn {
@@ -711,12 +755,246 @@ impl MapApp {
             .checkbox(&mut self.session.show_borders, "Granice")
             .changed()
         {
+            if !self.session.show_borders {
+                self.session.selected_realm = None;
+            }
             self.session.texture_dirty = true;
         }
+        self.ui_realm_dossier(ui);
         ui.separator();
         self.ui_ecology_legend(ui);
         self.ui_settlement_legend(ui);
         self.ui_biome_legend(ui);
+    }
+
+    fn ui_realm_dossier(&mut self, ui: &mut egui::Ui) {
+        let Some(realm_id) = self.session.selected_realm else {
+            return;
+        };
+        let Some(map) = self.session.settlements.as_ref() else {
+            return;
+        };
+        let Some(realm) = map.realms.get(realm_id) else {
+            return;
+        };
+        let capital_name = map
+            .settlements
+            .get(realm.capital_idx)
+            .map(|s| s.name.as_str())
+            .unwrap_or("—");
+        let population = realm.population(&map.settlements);
+        let relations: Vec<(String, String, String)> = realm
+            .relations
+            .iter()
+            .map(|rel| {
+                let other = map
+                    .realms
+                    .get(rel.other_realm_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| format!("#{}", rel.other_realm_id));
+                let (kind_label, tension_txt) = match self
+                    .session
+                    .diplomacy
+                    .edge(realm_id, rel.other_realm_id)
+                {
+                    Some(edge) => {
+                        let war = if edge.at_war { " · WOJNA" } else { "" };
+                        (
+                            format!("{}{war}", edge.kind.label()),
+                            format!("napięcie {:+}", edge.tension),
+                        )
+                    }
+                    None => (rel.kind.label().to_string(), "napięcie —".into()),
+                };
+                (other, kind_label, tension_txt)
+            })
+            .collect();
+        let wars: Vec<String> = self
+            .session
+            .diplomacy
+            .edges
+            .iter()
+            .filter(|e| e.at_war && (e.realm_a == realm_id || e.realm_b == realm_id))
+            .map(|e| {
+                let other_id = if e.realm_a == realm_id {
+                    e.realm_b
+                } else {
+                    e.realm_a
+                };
+                let other = map
+                    .realms
+                    .get(other_id)
+                    .map(|r| r.name.as_str())
+                    .unwrap_or("?");
+                format!("{other} ({} mies.)", e.war_months)
+            })
+            .collect();
+        let embargoes_out: Vec<String> = self
+            .session
+            .diplomacy
+            .embargoes
+            .iter()
+            .filter(|e| e.from == realm_id)
+            .map(|e| {
+                map.realms
+                    .get(e.against)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| format!("#{}", e.against))
+            })
+            .collect();
+        let embargoes_in: Vec<String> = self
+            .session
+            .diplomacy
+            .embargoes
+            .iter()
+            .filter(|e| e.against == realm_id)
+            .map(|e| {
+                map.realms
+                    .get(e.from)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| format!("#{}", e.from))
+            })
+            .collect();
+        let occupied = self.session.diplomacy.occupied_count(realm_id);
+        let last_event = self.session.diplomacy.last_event.clone();
+        let goals = realm.goals.clone();
+        let exports: Vec<(String, u32)> = realm
+            .exports
+            .iter()
+            .map(|c| (c.good.label().to_string(), c.amount))
+            .collect();
+        let imports: Vec<(String, u32)> = realm
+            .imports
+            .iter()
+            .map(|c| (c.good.label().to_string(), c.amount))
+            .collect();
+        let routes: Vec<String> = realm
+            .trade_routes
+            .iter()
+            .map(|route| {
+                let partner = map
+                    .realms
+                    .get(route.partner_realm_id)
+                    .map(|r| r.name.as_str())
+                    .unwrap_or("?");
+                let good = route.good.label();
+                let blocked = self
+                    .session
+                    .diplomacy
+                    .trade_blocked(realm_id, route.partner_realm_id);
+                let line = if route.exporting {
+                    format!("eksport {good} → {partner}")
+                } else {
+                    format!("import {good} ← {partner}")
+                };
+                if blocked {
+                    format!("{line} (zawieszony)")
+                } else {
+                    line
+                }
+            })
+            .collect();
+        let ruler = realm.ruler_name.clone();
+        let name = realm.name.clone();
+        let government = realm.government.label();
+        let culture = realm.culture.label();
+        let religion = realm.religion.label();
+        let ambition = realm.ambition.label();
+        let fame = self.session.diplomacy.fame_of(realm);
+        let manpower = realm.manpower;
+        let military = realm.military_strength;
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(RichText::new("Państwo").strong());
+        ui.label(RichText::new(&name).heading());
+        ui.label(format!("Władca: {ruler}"));
+        ui.label(format!("Stolica: {capital_name}"));
+        ui.label(format!("Populacja: {}", format_pop(population)));
+        ui.label(format!("Kultura: {culture}"));
+        ui.label(format!("Władza: {government}"));
+        ui.label(format!("Religia: {religion}"));
+        ui.label(format!(
+            "Siła wojskowa: {military}/100 (sława {fame} · liczebność {manpower})"
+        ));
+        ui.label(format!("Ambicja władcy: {ambition}"));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Eksport").small().strong());
+        if exports.is_empty() {
+            ui.label(RichText::new("Brak nadwyżek").small());
+        } else {
+            for (good, amount) in &exports {
+                ui.label(RichText::new(format!("• {good} ({amount})")).small());
+            }
+        }
+        ui.label(RichText::new("Import").small().strong());
+        if imports.is_empty() {
+            ui.label(RichText::new("Brak niedoborów").small());
+        } else {
+            for (good, amount) in &imports {
+                ui.label(RichText::new(format!("• {good} ({amount})")).small());
+            }
+        }
+        ui.label(RichText::new("Handel").small().strong());
+        if routes.is_empty() {
+            ui.label(RichText::new("Brak szlaków z partnerami").small());
+        } else {
+            for line in &routes {
+                ui.label(RichText::new(format!("• {line}")).small());
+            }
+        }
+        if !embargoes_out.is_empty() {
+            ui.label(RichText::new("Embargo (nakłada)").small().strong());
+            for name in &embargoes_out {
+                ui.label(RichText::new(format!("• {name}")).small());
+            }
+        }
+        if !embargoes_in.is_empty() {
+            ui.label(RichText::new("Embargo (otrzymuje)").small().strong());
+            for name in &embargoes_in {
+                ui.label(RichText::new(format!("• {name}")).small());
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("Cele").small().strong());
+        if goals.is_empty() {
+            ui.label(RichText::new("Brak").small());
+        } else {
+            for goal in &goals {
+                ui.label(RichText::new(format!("• {goal}")).small());
+            }
+        }
+        if !relations.is_empty() || !wars.is_empty() {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Dyplomacja").small().strong());
+            ui.label(
+                RichText::new("Relacje / wojny w czasie gry (co miesiąc).")
+                    .small()
+                    .weak(),
+            );
+            if let Some(ev) = &last_event {
+                ui.label(RichText::new(ev).small().italics());
+            }
+            if !wars.is_empty() {
+                ui.label(RichText::new("W wojnie z:").small());
+                for w in &wars {
+                    ui.label(RichText::new(format!("• {w}")).small());
+                }
+            }
+            if occupied > 0 {
+                ui.label(
+                    RichText::new(format!("Okupacja (de facto): {occupied} komórek"))
+                        .small(),
+                );
+            }
+            for (other, kind, tension) in &relations {
+                ui.label(RichText::new(format!("• {other}: {kind} ({tension})")).small());
+            }
+        }
+        ui.add_space(4.0);
+        if ui.button("Zamknij").clicked() {
+            self.session.selected_realm = None;
+        }
     }
 
     fn ui_ecology_legend(&self, ui: &mut egui::Ui) {
@@ -828,6 +1106,7 @@ impl MapApp {
                     .and_then(|di| settlement.districts.get(di));
                 self.session.selected_info = Some(format_settlement_label(settlement, district));
                 self.session.selected_hit = Some(hit);
+                self.session.selected_realm = None;
                 if matches!(self.session.lod, LodLevel::Chunk { .. }) {
                     if self.session.player_spawn.is_none() {
                         self.session.pending_spawn = Some((settlement.x, settlement.y));
@@ -958,6 +1237,39 @@ impl MapApp {
             draw_map_scale(ui.painter(), rect, world_span);
         }
 
+        if !self.session.loading {
+            let config = self.session.config();
+            let bounds = self.session.lod.bounds(&config);
+            let settlements = self.session.view_settlements();
+            draw_settlement_labels(
+                ui.painter(),
+                rect,
+                &bounds,
+                &settlements,
+                self.session.lod,
+                |wx, wy| self.session.world_revealed(wx, wy, &config),
+            );
+
+            if matches!(
+                self.session.border_draw_mode(),
+                Some(BorderDrawMode::Realms) | Some(BorderDrawMode::RealmsAndCities)
+            ) {
+                let realms_settlements = self
+                    .session
+                    .settlements
+                    .as_ref()
+                    .map(|m| m.settlements.as_slice())
+                    .unwrap_or(&[]);
+                draw_realm_labels(
+                    ui.painter(),
+                    rect,
+                    &bounds,
+                    self.session.realms(),
+                    realms_settlements,
+                );
+            }
+        }
+
         if self.session.loading {
             ui.painter()
                 .rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(0, 0, 0, 120));
@@ -980,6 +1292,44 @@ impl MapApp {
 
         if response.clicked() && !self.session.loading {
             if let Some(pos) = response.interact_pointer_pos() {
+                let realm_hit = matches!(
+                    self.session.border_draw_mode(),
+                    Some(BorderDrawMode::Realms) | Some(BorderDrawMode::RealmsAndCities)
+                )
+                .then(|| {
+                    let config = self.session.config();
+                    let bounds = self.session.lod.bounds(&config);
+                    let settlements = self
+                        .session
+                        .settlements
+                        .as_ref()
+                        .map(|m| m.settlements.as_slice())
+                        .unwrap_or(&[]);
+                    hit_realm_label(
+                        ui,
+                        pos,
+                        rect,
+                        &bounds,
+                        self.session.realms(),
+                        settlements,
+                    )
+                })
+                .flatten();
+
+                if let Some(realm_id) = realm_hit {
+                    let realm_name = self
+                        .session
+                        .realms()
+                        .get(realm_id)
+                        .map(|r| r.name.clone());
+                    self.session.selected_realm = Some(realm_id);
+                    self.session.selected_hit = None;
+                    if let Some(name) = realm_name {
+                        self.session.selected_info = Some(format!("Państwo: {name}"));
+                    }
+                    return;
+                }
+
                 let px = ((pos.x - rect.left()) / rect.width()) * size.x;
                 let py = ((pos.y - rect.top()) / rect.height()) * size.y;
                 self.handle_map_click((px, py), (size.x, size.y));
@@ -1005,6 +1355,220 @@ fn nice_scale_km(raw_km: f32) -> f32 {
         10.0
     };
     nice * base
+}
+
+fn world_to_map_pos(wx: f32, wy: f32, bounds: &WorldBounds, map_rect: egui::Rect) -> egui::Pos2 {
+    let sx = map_rect.left() + ((wx - bounds.x0) / bounds.span) * map_rect.width();
+    let sy = map_rect.top() + ((wy - bounds.y0) / bounds.span) * map_rect.height();
+    pos2(sx, sy)
+}
+
+fn realm_label_anchor(realm: &Realm, settlements: &[Settlement]) -> Option<(f32, f32)> {
+    let mut sx = 0.0f32;
+    let mut sy = 0.0f32;
+    let mut n = 0usize;
+    for &si in &realm.settlement_idxs {
+        let Some(s) = settlements.get(si) else {
+            continue;
+        };
+        sx += s.x;
+        sy += s.y;
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    Some((sx / n as f32, sy / n as f32))
+}
+
+fn draw_outlined_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    fill: Color32,
+) {
+    let outline = Color32::from_rgba_unmultiplied(0, 0, 0, 200);
+    for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+        painter.text(pos + Vec2::new(dx, dy), align, text, font.clone(), outline);
+    }
+    painter.text(pos, align, text, font, fill);
+}
+
+fn settlement_label_rank(kind: SettlementKind) -> u8 {
+    match kind {
+        SettlementKind::City => 0,
+        SettlementKind::Town => 1,
+        SettlementKind::Village => 2,
+        SettlementKind::Hamlet => 3,
+    }
+}
+
+fn settlement_label_allowed(kind: SettlementKind, lod: LodLevel) -> bool {
+    match lod {
+        LodLevel::Global => matches!(kind, SettlementKind::City | SettlementKind::Town),
+        LodLevel::Region(_) => {
+            matches!(
+                kind,
+                SettlementKind::City | SettlementKind::Town | SettlementKind::Village
+            )
+        }
+        LodLevel::Chunk { .. } => true,
+    }
+}
+
+fn settlement_label_font(kind: SettlementKind, map_w: f32) -> FontId {
+    let size = match kind {
+        SettlementKind::City => (map_w * 0.016).clamp(11.0, 15.0),
+        SettlementKind::Town => (map_w * 0.014).clamp(10.0, 13.0),
+        SettlementKind::Village => (map_w * 0.012).clamp(9.0, 12.0),
+        SettlementKind::Hamlet => (map_w * 0.011).clamp(8.0, 11.0),
+    };
+    FontId::proportional(size)
+}
+
+/// Names above settlement markers; denser LOD shows more kinds; overlaps drop lesser ranks.
+fn draw_settlement_labels(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    bounds: &WorldBounds,
+    settlements: &[Settlement],
+    lod: LodLevel,
+    revealed: impl Fn(f32, f32) -> bool,
+) {
+    if bounds.span <= 0.0 || settlements.is_empty() {
+        return;
+    }
+
+    let mut candidates: Vec<&Settlement> = settlements
+        .iter()
+        .filter(|s| settlement_label_allowed(s.kind, lod))
+        .filter(|s| {
+            s.x >= bounds.x0
+                && s.y >= bounds.y0
+                && s.x <= bounds.x0 + bounds.span
+                && s.y <= bounds.y0 + bounds.span
+                && revealed(s.x, s.y)
+        })
+        .collect();
+    candidates.sort_by(|a, b| {
+        settlement_label_rank(a.kind)
+            .cmp(&settlement_label_rank(b.kind))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let min_sep = match lod {
+        LodLevel::Global => 52.0,
+        LodLevel::Region(_) => 40.0,
+        LodLevel::Chunk { .. } => 28.0,
+    };
+    let color = Color32::from_rgb(0xf2, 0xec, 0xde);
+    let mut placed: Vec<egui::Pos2> = Vec::new();
+
+    for s in candidates {
+        let marker = world_to_map_pos(s.x, s.y, bounds, map_rect);
+        // Above the marker so the name stays clear of the settlement glyph.
+        let label_pos = marker - Vec2::new(0.0, 8.0);
+        if placed
+            .iter()
+            .any(|p| (*p - label_pos).length() < min_sep)
+        {
+            continue;
+        }
+        placed.push(label_pos);
+        draw_outlined_text(
+            painter,
+            label_pos,
+            Align2::CENTER_BOTTOM,
+            &s.name,
+            settlement_label_font(s.kind, map_rect.width()),
+            color,
+        );
+    }
+}
+
+fn realm_label_font(map_w: f32) -> FontId {
+    FontId::proportional((map_w * 0.018).clamp(11.0, 18.0))
+}
+
+fn realm_label_screen_pos(
+    realm: &Realm,
+    settlements: &[Settlement],
+    bounds: &WorldBounds,
+    map_rect: egui::Rect,
+) -> Option<egui::Pos2> {
+    let (wx, wy) = realm_label_anchor(realm, settlements)?;
+    if wx < bounds.x0
+        || wy < bounds.y0
+        || wx > bounds.x0 + bounds.span
+        || wy > bounds.y0 + bounds.span
+    {
+        return None;
+    }
+    Some(world_to_map_pos(wx, wy, bounds, map_rect))
+}
+
+fn hit_realm_label(
+    ui: &egui::Ui,
+    pointer: egui::Pos2,
+    map_rect: egui::Rect,
+    bounds: &WorldBounds,
+    realms: &[Realm],
+    settlements: &[Settlement],
+) -> Option<usize> {
+    if bounds.span <= 0.0 || realms.is_empty() {
+        return None;
+    }
+    let font = realm_label_font(map_rect.width());
+    let mut best: Option<(usize, f32)> = None;
+    for realm in realms {
+        let Some(pos) = realm_label_screen_pos(realm, settlements, bounds, map_rect) else {
+            continue;
+        };
+        let galley =
+            ui.fonts_mut(|f| f.layout_no_wrap(realm.name.clone(), font.clone(), Color32::WHITE));
+        let rect = Align2::CENTER_CENTER
+            .anchor_size(pos, galley.size())
+            .expand(3.0);
+        if rect.contains(pointer) {
+            let d = pointer.distance(pos);
+            if best.map_or(true, |(_, bd)| d < bd) {
+                best = Some((realm.id, d));
+            }
+        }
+    }
+    best.map(|(id, _)| id)
+}
+
+/// Realm name near territory center (settlement names are drawn separately).
+fn draw_realm_labels(
+    painter: &egui::Painter,
+    map_rect: egui::Rect,
+    bounds: &WorldBounds,
+    realms: &[Realm],
+    settlements: &[Settlement],
+) {
+    if bounds.span <= 0.0 || realms.is_empty() {
+        return;
+    }
+
+    let realm_font = realm_label_font(map_rect.width());
+    let realm_color = Color32::from_rgb(0xf4, 0xee, 0xe0);
+
+    for realm in realms {
+        let Some(pos) = realm_label_screen_pos(realm, settlements, bounds, map_rect) else {
+            continue;
+        };
+        draw_outlined_text(
+            painter,
+            pos,
+            Align2::CENTER_CENTER,
+            &realm.name,
+            realm_font.clone(),
+            realm_color,
+        );
+    }
 }
 
 /// Map scale bar in the bottom-right corner (1 world unit = 1 km).

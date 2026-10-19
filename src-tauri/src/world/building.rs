@@ -3,43 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::world::prng::unit_noise;
 use crate::world::settlement::{DistrictKind, Settlement, SettlementKind};
 
+pub use crate::world::goods::Good;
+
 /// Dedicated PRNG channel — do not reuse settlement / NPC channels.
 const CHANNEL_BUILDING: u64 = 71;
 
 /// Sentinel district index for settlement-wide buildings (no districts).
 const SETTLEMENT_WIDE_DI: usize = 0;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Good {
-    Hides,
-    Grain,
-    Iron,
-    Fish,
-    Timber,
-    Goods,
-    Food,
-    Ore,
-    Herbs,
-    Tools,
-}
-
-impl Good {
-    pub fn label(self) -> &'static str {
-        match self {
-            Good::Hides => "skóry",
-            Good::Grain => "zboże",
-            Good::Iron => "żelazo",
-            Good::Fish => "ryby",
-            Good::Timber => "drewno",
-            Good::Goods => "towary",
-            Good::Food => "żywność",
-            Good::Ore => "ruda",
-            Good::Herbs => "zioła",
-            Good::Tools => "narzędzia",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
