@@ -59,3 +59,5 @@ Powiązanie poszczególnych budynków z profesjami opisuje [Budynki i profesje](
 ## Kryterium ukończenia
 
 Każda osada ma widoczną, sensowną zabudowę niezależnie od tego, czy wygenerowano w niej dzielnice. Dzielnice różnicują funkcje i budynki, a teren, populacja i dostęp do zasobów ograniczają ich dobór.
+
+Powiązanie ratusza, świątyni i komory celnej z generacją praw państwowych: [prawa.md](./prawa.md) §5.

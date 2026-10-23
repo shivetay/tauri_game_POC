@@ -1,6 +1,8 @@
 //! Session-layer diplomacy: tension, abstract war, occupation claims, embargoes.
 
 use crate::world::borders::{Realm, RelationKind, RulerAmbition, TerritoryMap};
+use crate::world::realm_annex::transfer_settlements_after_annex;
+use crate::world::settlement::Settlement;
 
 /// Higher = more hostile. Range intended −100..=100.
 pub type Tension = i16;
@@ -151,9 +153,11 @@ impl RealmDiplomacyMap {
     }
 
     /// Advance one in-game month. Returns `true` if de jure `owners` changed (stage C).
+    /// May mutate `realms` settlement lists on peace annexation (E1).
     pub fn tick_month(
         &mut self,
-        realms: &[Realm],
+        realms: &mut [Realm],
+        settlements: &[Settlement],
         territory: &mut TerritoryMap,
         month_index: u32,
     ) -> bool {
@@ -176,7 +180,7 @@ impl RealmDiplomacyMap {
             }
         }
 
-        let settled = self.update_wars(realms, territory, month_index);
+        let settled = self.update_wars(realms, settlements, territory, month_index);
         self.grow_occupation(realms, territory, month_index);
         self.refresh_embargoes(realms);
         settled
@@ -184,7 +188,8 @@ impl RealmDiplomacyMap {
 
     fn update_wars(
         &mut self,
-        realms: &[Realm],
+        realms: &mut [Realm],
+        settlements: &[Settlement],
         territory: &mut TerritoryMap,
         month_index: u32,
     ) -> bool {
@@ -230,7 +235,8 @@ impl RealmDiplomacyMap {
         }
 
         for (a, b) in peaces {
-            if self.resolve_peace(realms, territory, a, b, month_index, &mut events) {
+            if self.resolve_peace(realms, settlements, territory, a, b, month_index, &mut events)
+            {
                 any_settled = true;
             }
         }
@@ -324,11 +330,12 @@ impl RealmDiplomacyMap {
         }
     }
 
-    /// Stage C: winner annexes occupied loser cells into `owners`; clear pair claims.
+    /// Stage C + E1: winner annexes occupied cells; settlements on winner land transfer.
     /// Returns whether any owner cell changed.
     fn resolve_peace(
         &mut self,
-        realms: &[Realm],
+        realms: &mut [Realm],
+        settlements: &[Settlement],
         territory: &mut TerritoryMap,
         a: usize,
         b: usize,
@@ -375,9 +382,19 @@ impl RealmDiplomacyMap {
         }
 
         let annexed = annex_occupation(self, territory, winner as u16, loser as u16);
+        let moved = if annexed > 0 {
+            transfer_settlements_after_annex(territory, settlements, realms, winner, loser)
+        } else {
+            Vec::new()
+        };
         if annexed > 0 {
+            let settle_txt = if moved.is_empty() {
+                String::new()
+            } else {
+                format!(" Osady: {}.", moved.len())
+            };
             events.push(format!(
-                "Ugoda: {wname} anektuje {annexed} komórek od {lname}. Granice prawne ujednolicone."
+                "Ugoda: {wname} anektuje {annexed} komórek od {lname}.{settle_txt} Granice prawne ujednolicone."
             ));
         } else {
             events.push(format!(
@@ -810,6 +827,7 @@ mod tests {
             }],
             imports: Vec::new(),
             trade_routes,
+            laws: Vec::new(),
         }
     }
 
@@ -833,7 +851,7 @@ mod tests {
 
     #[test]
     fn from_realms_dedupes_pairs() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::FortifyHomeland,
@@ -865,7 +883,7 @@ mod tests {
 
     #[test]
     fn expand_borders_raises_tension_over_months() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::ExpandBorders,
@@ -893,7 +911,7 @@ mod tests {
         let mut map = RealmDiplomacyMap::from_realms(&realms);
         let start = map.edges[0].tension;
         for m in 0..8 {
-            map.tick_month(&realms, &mut territory, m);
+            map.tick_month(&mut realms, &[], &mut territory, m);
         }
         assert!(
             map.edges[0].tension > start,
@@ -903,7 +921,7 @@ mod tests {
 
     #[test]
     fn tick_month_is_deterministic() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::DominateTrade,
@@ -932,8 +950,8 @@ mod tests {
         let mut a = RealmDiplomacyMap::from_realms(&realms);
         let mut b = RealmDiplomacyMap::from_realms(&realms);
         for m in 0..12 {
-            a.tick_month(&realms, &mut territory_a, m);
-            b.tick_month(&realms, &mut territory_b, m);
+            a.tick_month(&mut realms, &[], &mut territory_a, m);
+            b.tick_month(&mut realms, &[], &mut territory_b, m);
         }
         assert_eq!(a, b);
         assert_eq!(territory_a, territory_b);
@@ -941,7 +959,7 @@ mod tests {
 
     #[test]
     fn high_tension_starts_war_and_blocks_trade() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::ExpandBorders,
@@ -968,14 +986,14 @@ mod tests {
         let mut territory = tiny_territory(vec![0, 1], 2, 1);
         let mut map = RealmDiplomacyMap::from_realms(&realms);
         map.edges[0].tension = WAR_TENSION;
-        map.tick_month(&realms, &mut territory, 1);
+        map.tick_month(&mut realms, &[], &mut territory, 1);
         assert!(map.edges[0].at_war);
         assert!(map.trade_blocked(0, 1));
     }
 
     #[test]
     fn war_grows_occupation_without_changing_owners() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::ExpandBorders,
@@ -1006,7 +1024,7 @@ mod tests {
         map.edges[0].tension = WAR_TENSION;
         map.edges[0].at_war = true;
         map.ensure_occupation_grid(&territory);
-        map.tick_month(&realms, &mut territory, 2);
+        map.tick_month(&mut realms, &[], &mut territory, 2);
         assert_eq!(territory.owners, owners_before);
         assert!(
             map.occupation.iter().any(|&c| c == 0),
@@ -1016,7 +1034,7 @@ mod tests {
 
     #[test]
     fn peace_annexes_occupation_into_owners() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::ExpandBorders,
@@ -1046,7 +1064,7 @@ mod tests {
         map.occupation[1] = 0; // realm 0 occupies realm 1's cell
         map.edges[0].at_war = true;
         map.edges[0].war_months = 10;
-        let settled = map.tick_month(&realms, &mut territory, 5);
+        let settled = map.tick_month(&mut realms, &[], &mut territory, 5);
         assert!(settled);
         assert!(!map.edges[0].at_war);
         assert_eq!(territory.owners[1], 0);
@@ -1054,8 +1072,95 @@ mod tests {
     }
 
     #[test]
+    fn peace_transfers_settlement_on_annexed_cell() {
+        use crate::world::settlement::{Settlement, SettlementKind};
+        let mut realms = vec![
+            stub_realm(
+                0,
+                RulerAmbition::ExpandBorders,
+                ReligionKind::SolarCult,
+                90,
+                vec![RealmRelation {
+                    other_realm_id: 1,
+                    kind: RelationKind::BorderFeud,
+                }],
+                None,
+            ),
+            stub_realm(
+                1,
+                RulerAmbition::FortifyHomeland,
+                ReligionKind::OldGods,
+                10,
+                vec![RealmRelation {
+                    other_realm_id: 0,
+                    kind: RelationKind::BorderFeud,
+                }],
+                None,
+            ),
+        ];
+        realms[0].settlement_idxs = vec![0];
+        realms[0].capital_idx = 0;
+        realms[1].settlement_idxs = vec![1];
+        realms[1].capital_idx = 1;
+        let settlements = vec![
+            Settlement {
+                x: 5.0,
+                y: 5.0,
+                kind: SettlementKind::Town,
+                population: 100,
+                radius: 1.0,
+                name: "Keep".into(),
+                core_dx: 0.0,
+                core_dy: 0.0,
+                districts: Vec::new(),
+                road_approaches: Vec::new(),
+                streets: Vec::new(),
+                walled: false,
+            },
+            Settlement {
+                x: 15.0,
+                y: 5.0,
+                kind: SettlementKind::Town,
+                population: 200,
+                radius: 1.0,
+                name: "Taken".into(),
+                core_dx: 0.0,
+                core_dy: 0.0,
+                districts: Vec::new(),
+                road_approaches: Vec::new(),
+                streets: Vec::new(),
+                walled: false,
+            },
+        ];
+        // step=10 → cell0 [0,10), cell1 [10,20)
+        let mut territory = TerritoryMap {
+            cols: 2,
+            rows: 1,
+            step: 10.0,
+            owners: vec![0, 1],
+        };
+        let mut map = RealmDiplomacyMap::from_realms(&realms);
+        map.ensure_occupation_grid(&territory);
+        map.occupation[1] = 0;
+        map.edges[0].at_war = true;
+        map.edges[0].war_months = 10;
+        let settled = map.tick_month(&mut realms, &settlements, &mut territory, 5);
+        assert!(settled);
+        assert_eq!(territory.owners[1], 0);
+        assert_eq!(realms[0].settlement_idxs, vec![0, 1]);
+        assert!(realms[1].settlement_idxs.is_empty());
+        assert!(
+            map.last_event
+                .as_ref()
+                .is_some_and(|e| e.contains("Osady: 1")),
+            "event should mention transferred settlements: {:?}",
+            map.last_event
+        );
+    }
+
+    #[test]
     fn ally_embargoes_enemy_during_war() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::ExpandBorders,
@@ -1120,7 +1225,7 @@ mod tests {
             .find(|e| e.realm_a == 0 && e.realm_b == 1)
             .unwrap()
             .at_war = true;
-        map.tick_month(&realms, &mut territory, 3);
+        map.tick_month(&mut realms, &[], &mut territory, 3);
         assert!(
             map.has_embargo(2, 1),
             "ally of A should embargo B during A↔B war"
@@ -1130,7 +1235,7 @@ mod tests {
 
     #[test]
     fn limited_war_does_not_occupy_cells() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::SecureFaith,
@@ -1158,7 +1263,7 @@ mod tests {
         let mut map = RealmDiplomacyMap::from_realms(&realms);
         map.edges[0].at_war = true;
         map.ensure_occupation_grid(&territory);
-        map.tick_month(&realms, &mut territory, 2);
+        map.tick_month(&mut realms, &[], &mut territory, 2);
         assert!(
             map.occupation.iter().all(|&c| c == u16::MAX),
             "wars without ExpandBorders should not push occupation"
@@ -1167,7 +1272,7 @@ mod tests {
 
     #[test]
     fn opportunist_can_declare_on_belligerent() {
-        let realms = vec![
+        let mut realms = vec![
             stub_realm(
                 0,
                 RulerAmbition::FortifyHomeland,
@@ -1228,7 +1333,7 @@ mod tests {
             .unwrap()
             .at_war = true;
         // month_index=2 → score for (2→1) divisible by 5 (see try_opportunistic_wars).
-        map.tick_month(&realms, &mut territory, 2);
+        map.tick_month(&mut realms, &[], &mut territory, 2);
         assert!(
             map.at_war(2, 1) || map.at_war(2, 0),
             "opportunist should open a front against a belligerent"

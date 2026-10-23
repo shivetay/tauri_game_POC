@@ -24,8 +24,11 @@ use crate::world::grid::{
     generate_global_grid_sampled, generate_region_grid_sampled, generate_view_grid_sampled,
 };
 use crate::world::sampler::TerrainSampler;
-use crate::world::building::{generate as generate_buildings, BuildingMap};
+use crate::world::building::{
+    ensure_capital_halls, generate as generate_buildings, BuildingMap,
+};
 use crate::world::realm_diplomacy::RealmDiplomacyMap;
+use crate::world::realm_laws::fill_realm_laws;
 use crate::world::realm_trade::fill_realm_trade;
 use crate::game_time::{GameTime, MONTHS_PER_YEAR, SECONDS_PER_DAY};
 use crate::world::building::NeedIntent;
@@ -1595,18 +1598,15 @@ impl MapSession {
         while last < current && steps < cap {
             last += 1;
             steps += 1;
-            let realms = self
-                .settlements
-                .as_ref()
-                .map(|m| m.realms.clone())
-                .unwrap_or_default();
             let Some(map) = self.settlements.as_mut() else {
                 break;
             };
-            if self
-                .diplomacy
-                .tick_month(&realms, &mut map.territory, last)
-            {
+            if self.diplomacy.tick_month(
+                &mut map.realms,
+                &map.settlements,
+                &mut map.territory,
+                last,
+            ) {
                 map.realm_borders = rebuild_realm_borders_from_owners(&map.territory);
                 borders_dirty = true;
             }
@@ -2095,11 +2095,23 @@ fn generate_job(req: GenRequest) -> GenResult {
     let mut settlements = req
         .settlements
         .unwrap_or_else(|| generate_settlements_sampled(&sampler));
-    let buildings = req
-        .buildings
-        .unwrap_or_else(|| generate_buildings(req.seed, &settlements.settlements));
+    let buildings = match req.buildings {
+        Some(b) => b,
+        None => {
+            let mut b = generate_buildings(req.seed, &settlements.settlements);
+            let capitals: Vec<usize> = settlements.realms.iter().map(|r| r.capital_idx).collect();
+            ensure_capital_halls(req.seed, &settlements.settlements, &capitals, &mut b);
+            b
+        }
+    };
     fill_realm_trade(
         &sampler,
+        &settlements.settlements,
+        &buildings,
+        &mut settlements.realms,
+    );
+    fill_realm_laws(
+        req.seed,
         &settlements.settlements,
         &buildings,
         &mut settlements.realms,

@@ -903,6 +903,31 @@ impl MapApp {
         let fame = self.session.diplomacy.fame_of(realm);
         let manpower = realm.manpower;
         let military = realm.military_strength;
+        let laws: Vec<String> = realm
+            .laws
+            .iter()
+            .map(|law| {
+                let sources = law
+                    .sources
+                    .iter()
+                    .map(|s| s.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let status = if law.enforced {
+                    "egzekwowane"
+                } else {
+                    "bez egzekucji"
+                };
+                format!(
+                    "{} · {} · {} · {} ({})",
+                    law.id.label(),
+                    law.domain.label(),
+                    law.strength.label(),
+                    status,
+                    sources
+                )
+            })
+            .collect();
 
         ui.add_space(8.0);
         ui.separator();
@@ -918,6 +943,15 @@ impl MapApp {
             "Siła wojskowa: {military}/100 (sława {fame} · liczebność {manpower})"
         ));
         ui.label(format!("Ambicja władcy: {ambition}"));
+        ui.add_space(4.0);
+        ui.label(RichText::new("Prawa").small().strong());
+        if laws.is_empty() {
+            ui.label(RichText::new("Brak").small());
+        } else {
+            for line in &laws {
+                ui.label(RichText::new(format!("• {line}")).small());
+            }
+        }
         ui.add_space(4.0);
         ui.label(RichText::new("Eksport").small().strong());
         if exports.is_empty() {
@@ -1104,7 +1138,34 @@ impl MapApp {
                 let district = hit
                     .district_index
                     .and_then(|di| settlement.districts.get(di));
-                self.session.selected_info = Some(format_settlement_label(settlement, district));
+                let mut label = format_settlement_label(settlement, district);
+                if let Some(map) = self.session.settlements.as_ref() {
+                    if let Some(realm) = map
+                        .realms
+                        .iter()
+                        .find(|r| r.settlement_idxs.contains(&hit.settlement_index))
+                    {
+                        label.push_str(&format!("\nPaństwo: {}", realm.name));
+                        if let Some(law) = realm
+                            .laws
+                            .iter()
+                            .find(|l| l.enforced)
+                            .or_else(|| realm.laws.first())
+                        {
+                            let status = if law.enforced {
+                                ""
+                            } else {
+                                " (bez egzekucji)"
+                            };
+                            label.push_str(&format!(
+                                "\nPrawo: {}{}",
+                                law.id.label(),
+                                status
+                            ));
+                        }
+                    }
+                }
+                self.session.selected_info = Some(label);
                 self.session.selected_hit = Some(hit);
                 self.session.selected_realm = None;
                 if matches!(self.session.lod, LodLevel::Chunk { .. }) {
