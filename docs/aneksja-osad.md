@@ -90,10 +90,10 @@ score = f(mismatch, population, dist_to_winner_capital, loser_fame)
 ### E0 — Dokument (ten plik)
 
 - [x] Specyfikacja łańcucha i etapów.
-- [ ] Akceptacja założeń A1–A6.
+- [x] Akceptacja założeń A1–A6 (slice E1+E2; A3 tymczasowo = wszystkie przepisane jak Accept).
 - **Verify:** można wskazać E1 bez dopytywania o model.
 
-### E1 — Przepisanie osad przy ugodzie
+### E1 — Przepisanie osad przy ugodzie — **DONE**
 
 **Zakres:**
 
@@ -103,9 +103,9 @@ score = f(mismatch, population, dist_to_winner_capital, loser_fame)
 
 **Verify:** test — po peace z aneksją komórki ze osadą, osada jest w `winner.settlement_idxs`; `cargo test --lib`.
 
-**Pliki:** `realm_diplomacy.rs`, ewentualnie helper w nowym `realm_annex.rs`; `borders.rs` tylko jeśli trzeba API realmów.
+**Pliki:** `realm_diplomacy.rs`, `realm_annex.rs`.
 
-### E2 — Egzekucja praw zwycięzcy na anektowanych
+### E2 — Egzekucja praw zwycięzcy na anektowanych — **DONE (MVP)**
 
 **Zakres:**
 
@@ -114,6 +114,8 @@ score = f(mismatch, population, dist_to_winner_capital, loser_fame)
 - Dossier zwycięzcy bez zmian katalogu praw (to nadal prawa realm — osady tylko „wchodzą pod parasol”).
 
 **Verify:** po aneksji panel/dossier pokazuje spójne państwo + prawo; determinizm.
+
+**W kodzie:** `apply_enforced_law_effects` (`GoodBan` na eksport/szlaki); klik osady → Państwo + Prawo.
 
 ### E3 — Reakcja osady (Accept / Resist / Rebel)
 
@@ -200,6 +202,11 @@ Równolegle / niezależnie z prawami: dokończenie etapu C z [prawa.md](./prawa.
 
 ## 10. Stan w kodzie
 
-**Brak implementacji E1–E5.** Dokument zatwierdzony jako plan (19.10.2026).
+**E1 + E2 wdrożone** (23.10.2026). E3–E5 jeszcze nie.
 
-Po wdrożeniu: odhaczyć etapy i uzupełnić tę sekcję jak w [prawa.md](./prawa.md) §14.
+| Element | Miejsce |
+| --- | --- |
+| Przepisanie osad po ugodzie | `realm_annex.rs` + `resolve_peace` |
+| `GoodBan` na eksporcie | `realm_laws::apply_enforced_law_effects` |
+| UI osada | `app.rs` — Państwo + Prawo przy kliku |
+| Testy | `peace_transfers_settlement_on_annexed_cell`, `enforced_good_ban_removes_export` |

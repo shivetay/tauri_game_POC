@@ -256,7 +256,29 @@ pub fn fill_realm_laws(
             .iter()
             .any(|b| b.kind == BuildingKind::Hall);
         realm.laws = generate_realm_laws(seed, realm, &capacity, hall_in_capital);
+        apply_enforced_law_effects(realm);
     }
+}
+
+/// Apply enforced law effects to realm trade data (stage C / E2).
+/// Currently: `GoodBan` removes the good from exports and exporting trade routes.
+pub fn apply_enforced_law_effects(realm: &mut Realm) {
+    let bans: Vec<Good> = realm
+        .laws
+        .iter()
+        .filter(|l| l.enforced)
+        .filter_map(|l| match l.effect {
+            LawEffect::GoodBan { good } => Some(good),
+            _ => None,
+        })
+        .collect();
+    if bans.is_empty() {
+        return;
+    }
+    realm.exports.retain(|c| !bans.contains(&c.good));
+    realm
+        .trade_routes
+        .retain(|r| !(r.exporting && bans.contains(&r.good)));
 }
 
 pub fn generate_realm_laws(
@@ -663,6 +685,57 @@ mod tests {
         let b = laws_for_seed(7);
         // Profiles differ with seed; laws almost certainly differ somewhere.
         assert!(a != b || a.iter().any(|laws| !laws.is_empty()));
+    }
+
+    #[test]
+    fn enforced_good_ban_removes_export() {
+        use crate::world::borders::{
+            CultureKind, GovernmentKind, ReligionKind, Realm, RulerAmbition,
+        };
+        let mut realm = Realm {
+            id: 0,
+            name: "T".into(),
+            capital_idx: 0,
+            settlement_idxs: vec![0],
+            ruler_name: "W".into(),
+            government: GovernmentKind::Monarchy,
+            culture: CultureKind::Agrarian,
+            religion: ReligionKind::AncestorRites,
+            ambition: RulerAmbition::FortifyHomeland,
+            fame: 40,
+            manpower: 10,
+            military_strength: 10,
+            goals: Vec::new(),
+            relations: Vec::new(),
+            exports: vec![
+                crate::world::borders::RealmCommodity {
+                    good: Good::Herbs,
+                    amount: 5,
+                },
+                crate::world::borders::RealmCommodity {
+                    good: Good::Grain,
+                    amount: 3,
+                },
+            ],
+            imports: Vec::new(),
+            trade_routes: vec![crate::world::borders::RealmTradeRoute {
+                partner_realm_id: 1,
+                good: Good::Herbs,
+                exporting: true,
+            }],
+            laws: vec![RealmLaw {
+                id: LawId::AncestralTaboo,
+                domain: LawDomain::Faith,
+                strength: LawStrength::Statute,
+                effect: LawEffect::GoodBan { good: Good::Herbs },
+                sources: vec![LawSource::Religion],
+                enforced: true,
+            }],
+        };
+        apply_enforced_law_effects(&mut realm);
+        assert!(!realm.exports.iter().any(|c| c.good == Good::Herbs));
+        assert!(realm.exports.iter().any(|c| c.good == Good::Grain));
+        assert!(realm.trade_routes.is_empty());
     }
 
     #[test]

@@ -46,10 +46,10 @@ Jedna osada ma lokalną frakcję i reputację gracza; co najmniej jedna decyzja 
 - Klik w nazwę państwa na mapie (przy włączonych granicach) pokazuje dossier w lewym panelu.
 - Dyplomacja v0 (warstwa sesji): napięcie między parami sąsiadów ewoluuje co miesiąc gry; dossier pokazuje aktualny rodzaj relacji i napięcie.
 - Wojna abstrakcyjna v0 (etap B): przy wysokim napięciu para wchodzi w `AtWar` (casus ≠ tylko podbój — też wiara, handel, rywalizacja). Blokada szlaków A↔B; osoby trzecie: embargo **albo** wypowiedzenie wojny już walczącym sąsiadom (okazja). Okupacja komórek tylko gdy strona ma ambicję `ExpandBorders` — konflikt może skończyć się bez zajęcia ziemi i bez „pełnego podboju”. Na mapie: kreskowanie napięcia i cross-hatch okupacji.
-- Ugoda terytorialna v0 (etap C): przy rozejmie (krótszym dla wojen ograniczonych) zwycięzca anektuje **to, co faktycznie okupuje**; claimy pary znikają; polilinie granic przebudowywane z rastra. Osady nie zmieniają przynależności w v0 (tylko wash + linie).
-- Brak jeszcze: przepisania osad do nowego państwa, reputacji gracza, ceł/karawan; skutków prawnych na handel.
-- **Prawa państwowe:** `Realm.laws` z profilu + `AdminCapacity` (budynki); Hall w stolicy; lista w dossier przy wyborze państwa. Bez skutków na handel. Spec: [prawa.md](./prawa.md).
-- **Aneksja osad / opór / secesja (plan):** po ugodzie — przepisanie osad, egzekucja praw, Accept\|Resist\|Rebel, interwencja, opc. nowe państwo — [aneksja-osad.md](./aneksja-osad.md) (etapy E1–E5).
+- Ugoda terytorialna: aneksja okupowanych komórek → `owners` + polyline; **E1:** osady na anektowanej ziemi (centroid) przechodzą do zwycięzcy; stolica przegranego korygowana.
+- **Prawa:** generacja + dossier; `GoodBan` filtruje eksport; klik osady pokazuje państwo + prawo. Spec: [prawa.md](./prawa.md).
+- **Aneksja E1+E2 done;** opór/bunt/interwencja/secesja (E3–E5) — plan [aneksja-osad.md](./aneksja-osad.md).
+- Brak jeszcze: reputacji gracza, karawan, E3–E5.
 
 ## Kryterium ukończenia
 

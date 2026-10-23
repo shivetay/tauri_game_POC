@@ -1598,18 +1598,15 @@ impl MapSession {
         while last < current && steps < cap {
             last += 1;
             steps += 1;
-            let realms = self
-                .settlements
-                .as_ref()
-                .map(|m| m.realms.clone())
-                .unwrap_or_default();
             let Some(map) = self.settlements.as_mut() else {
                 break;
             };
-            if self
-                .diplomacy
-                .tick_month(&realms, &mut map.territory, last)
-            {
+            if self.diplomacy.tick_month(
+                &mut map.realms,
+                &map.settlements,
+                &mut map.territory,
+                last,
+            ) {
                 map.realm_borders = rebuild_realm_borders_from_owners(&map.territory);
                 borders_dirty = true;
             }

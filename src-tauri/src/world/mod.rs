@@ -3,6 +3,7 @@ pub mod borders;
 pub mod building;
 pub mod config;
 pub mod goods;
+pub mod realm_annex;
 pub mod realm_diplomacy;
 pub mod realm_laws;
 pub mod realm_trade;

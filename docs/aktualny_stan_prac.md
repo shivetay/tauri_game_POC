@@ -1,6 +1,6 @@
 # Aktualny stan prac
 
-**Stan na: 19.10.2026**
+**Stan na: 23.10.2026**
 
 ## Podsumowanie
 
@@ -20,14 +20,14 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Przycisk **Symulacja (bez gracza)**: uruchamia zegar, NPC i dyplomację bez spawnu / fog / markera; osobny stop. Spawn gracza wyłącza ten tryb i resetuje czas.
 - Kalendarz gry: rok 360-dniowy (12×30), etykieta zegara z rokiem, dniem i miesiącem; cztery pory roku (Wiosna/Lato/Jesień/Zima, po 3 miesiące). Wygląd mapy nadal niezależny od pory roku.
 - Aplikacja desktopowa oparta o Bevy i egui.
-- Państwa (`Realm`): unikalne nazwy; profil (władca, ustrój, kultura, religia, ambicja, sława, liczebność, siła wojskowa, cele tylko do odczytu). Statyczny handel: eksport/import + szlaki. Dyplomacja v0 (sesja): napięcie −100…100; `RelationKind` w dossier. Wojna: casus nie tylko podbój; okupacja tylko przy `ExpandBorders`; ograniczona wojna kończy się szybciej bez pełnego zajęcia; trzecie państwo może embargo **lub** wypowiedzieć wojnę już walczącym. Ugoda v0: aneksja tego, co okupowane → `owners` + polyline; osady bez zmiany przynależności. Granice → etykieta; klik → dossier.
-- Prawa państwowe (etap A + UI): `Realm.laws` generowane z religii/kultury/ustroju/ambicji oraz pojemności administracyjnej z budynków; gwarantowany `Hall` w stolicy przy świeżej generacji budynków; dossier państwa pokazuje listę praw. Bez filtrów handlu — [prawa.md](./prawa.md).
+- Państwa (`Realm`): unikalne nazwy; profil (władca, ustrój, kultura, religia, ambicja, sława, liczebność, siła wojskowa, cele tylko do odczytu). Statyczny handel: eksport/import + szlaki. Dyplomacja v0 (sesja): napięcie −100…100; `RelationKind` w dossier. Wojna: casus nie tylko podbój; okupacja tylko przy `ExpandBorders`; ograniczona wojna kończy się szybciej bez pełnego zajęcia; trzecie państwo może embargo **lub** wypowiedzieć wojnę już walczącym. Ugoda: aneksja okupowanych → `owners` + polyline; **osady na anektowanej ziemi przechodzą do zwycięzcy** (centroid). Granice → etykieta; klik → dossier.
+- Prawa państwowe: generacja z profilu + capacity; Hall w stolicy; dossier „Prawa”; egzekwowany `GoodBan` filtruje eksport/szlaki; klik osady → Państwo + Prawo — [prawa.md](./prawa.md).
 - Nazwy osad na mapie nad markerem: świat — miasta i miasteczka; region — też wsie; chunk — wszystkie; bez nakładania; pod mgłą tylko odkryte.
 
 ## W trakcie
 
 - Dalsza praca nad spójnością mostów / przebiegu dróg (osobny wątek generatora; nie blokuje podróży NPC po grafie osad).
-- Plan aneksji osad po wojnie (E1–E5): dokument [aneksja-osad.md](./aneksja-osad.md) — kod jeszcze nie rozpoczęty; kolejny slice: E1+E2.
+- Aneksja E3–E5 (opór / interwencja / secesja) — plan [aneksja-osad.md](./aneksja-osad.md).
 
 ## Jeszcze niezaimplementowane systemy rozgrywki
 
@@ -37,7 +37,7 @@ Projekt działa jako desktopowy prototyp mapy proceduralnego świata z podstawow
 - Handel z graczem, markery NPC na mapie.
 - Dialog gracza z NPC (informator / handel) i zlecenia; zapis relacji w sesji.
 - Trwała migracja populacji, harmonogramy NPC, frakcje oraz wydarzenia świata.
-- Aktywna polityka państw: **przepisanie osad po ugodzie**, opór/bunt/interwencja/secesja ([aneksja-osad.md](./aneksja-osad.md)); ekspansja poza wojną; reputacja; cele runtime; prawa — skutek na handel + panel osady ([prawa.md](./prawa.md) B–C).
+- Aktywna polityka: opór/bunt/interwencja/secesja (E3–E5); ekspansja poza wojną; reputacja; cele runtime; prawa etap B (Customs) — [aneksja-osad.md](./aneksja-osad.md), [prawa.md](./prawa.md).
 - Rozgrywkowe delty terenu i infrastruktura gracza.
 - Wpływ pory roku na wygląd mapy (etap 4 z issue #8).
 

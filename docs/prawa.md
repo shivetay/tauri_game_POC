@@ -467,25 +467,25 @@ Etap B
 - [ ] test: teokracja vs monarchia (Faith)
 
 Etap C
-- [ ] aplikacja GoodBan lub Tariff do eksportu/szlaków
+- [x] aplikacja GoodBan na eksporcie/szlakach (`apply_enforced_law_effects`)
 - [x] UI dossier — sekcja Prawa
-- [ ] UI osada — jedna linia
-- [ ] aktualizacja docs/aktualny_stan_prac.md, panstwa.md, ten plik §14
+- [x] UI osada — Państwo + Prawo przy kliku
+- [x] aktualizacja docs (aneksja E1+E2)
 ```
 
 ---
 
 ## 14. Stan w kodzie
 
-**Etap A wdrożony** (19.10.2026). **UI dossier (część C):** lista praw przy wyborze państwa.
+**Etap A + C (MVP skutków)** (23.10.2026). Aneksja osad: [aneksja-osad.md](./aneksja-osad.md) E1+E2.
 
 | Element | Miejsce |
 | --- | --- |
 | Typy + generacja + capacity | `src-tauri/src/world/realm_laws.rs` |
 | `Realm.laws` | `borders.rs` |
 | Gwarancja `Hall` w stolicy | `building::ensure_capital_halls` (tylko przy świeżej generacji budynków) |
-| Pipeline | `session::generate_job` → buildings → (halls) → trade → **laws** → npcs |
-| UI | `app.rs` → `ui_realm_dossier` — sekcja „Prawa” |
-| Testy | `same_seed_same_laws`, `capital_hall_grants_tax_capacity`, `different_seeds_can_differ` |
+| Pipeline | `session::generate_job` → buildings → (halls) → trade → **laws** (+ GoodBan) → npcs |
+| UI | dossier „Prawa”; klik osady → Państwo + Prawo |
+| Testy | m.in. `enforced_good_ban_removes_export`, `same_seed_same_laws` |
 
-Świadomie niezaimplementowane: `ContrabandSalt` w katalogu (rezerwa), skutki na `exports`/`trade_routes`, linia praw w panelu osady.
+Świadomie niezaimplementowane: `ContrabandSalt` w katalogu (rezerwa), `Tariff` jako mutacja cen, Customs (etap B).
